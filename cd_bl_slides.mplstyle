@@ -1,0 +1,33 @@
+animation.embed_limit : 50
+animation.html: jshtml
+
+figure.dpi : 100
+figure.figsize:6,4
+figure.subplot.top:0.95
+figure.subplot.bottom:0.075
+figure.subplot.left:0.05
+figure.subplot.right:0.95
+figure.subplot.hspace:0.3
+figure.subplot.wspace:0.3
+figure.titlesize: 24
+
+savefig.dpi : 300
+savefig.transparent: True
+savefig.bbox:tight
+
+font.family : sans-serif
+font.sans-serif : Average Sans
+font.stretch:semi-expanded
+font.size:12
+
+axes.titlesize:18
+axes.titleweight:bold
+axes.titlelocation: left
+axes.labelsize: 16
+
+legend.fontsize:14
+legend.frameon: False
+
+axes.prop_cycle: cycler(color=['3A80A6', 'FF800E', '6E6E6E', 'B01919', '5F9ED1', 'C85200', '898989', 'A2C8EC', 'FFBC79', 'CFCFCF'])
+axes.grid : True
+grid.alpha: 0.2

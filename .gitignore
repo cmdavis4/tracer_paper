@@ -1,0 +1,39 @@
+figures
+__pycache__
+.ipynb_checkpoints
+data
+.idea
+.ipynb_checkpoints
+
+# ignore RAMS Output files
+*.h5
+
+# ignore compile files
+*.a
+*.mod
+
+# ignore temporary or system files
+.DS_Store
+*.swp
+
+# Ignore sample files
+*.grb1
+*.grb2
+dp-p[0-9]*
+bin.block/example_modis_sst/*
+bin.block/example_reynolds_sst/*
+bin.dp.grib1/example_data/*
+bin.dp.grib2/example_data/*
+bin.revu/example_data/*
+bin.dp.grib2/wgrib*
+bin.rams/dprep.test/*
+
+# Ignore external libraries
+misc/*
+*.tar.gz
+*.tar
+*.tgz
+
+bin.rams/rams*
+
+include.mk
