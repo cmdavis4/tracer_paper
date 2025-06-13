@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/1000466273.svg)](https://doi.org/10.5281/zenodo.15659853)
+
 This repository contains the code associated with the manuscript "The Entrainment of Air from Rainy Surface Regions and its Implications for Bioaerosol Transport in Three Deep Convective Storm Morphologies" (Davis et al.) To create a python environment that can run the `analysis-tracerpaper.ipynb` notebook, first install [conda](https://anaconda.org/anaconda/conda) following the documentation. Then clone this respository and enter it. Create a conda environment using the included requirements file:
 ```
 conda create -n cd_etal_tracer_paper --file requirements_conda.txt
