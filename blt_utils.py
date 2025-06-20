@@ -130,24 +130,6 @@ RAMS_OUTPUT_DIRS = {
     ),
 }
 
-# Paths to precalculated tracer vertical profile datasets
-# TRACER_TOTALS_PROFILE_FILEPATHS = {
-#     "ic_wk": BASE_DERIVED_DIR.joinpath("ic_wk").joinpath("tracer_totals_profile_ds.nc"),
-#     "sl_wk": BASE_DERIVED_DIR.joinpath("sl_wk").joinpath("tracer_totals_profile_ds.nc"),
-#     "sc_wk": BASE_DERIVED_DIR.joinpath("sc_wk").joinpath(
-#         f"tracer_totals_profile_ds_stratwinds.nc"
-#     ),
-# }
-
-# Paths to storm development dataframes
-# DEVELOPMENT_DATAFRAME_FILEPATHS = {
-#     "ic_wk": BASE_DERIVED_DIR.joinpath("ic_wk").joinpath("development_dataframe.pkl"),
-#     "sl_wk": BASE_DERIVED_DIR.joinpath("sl_wk").joinpath("development_dataframe.pkl"),
-#     "sc_wk": BASE_DERIVED_DIR.joinpath("sc_wk").joinpath(
-#         f"development_dataframe_stratwinds.pkl"
-#     ),
-# }
-
 ########################################################################################
 ############################## Derived variable functions ##############################
 ########################################################################################
