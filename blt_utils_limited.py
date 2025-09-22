@@ -268,9 +268,9 @@ ANALYSIS_FLAG_FUNCTIONS = {
 
 
 # Function to label time on the x axis with consistent tick mark values
-def label_x_axis(ax):
+def label_x_axis(ax, short=False):
     ax.xaxis.set_ticks(np.arange(0, 181, 30))
-    ax.set_xlabel("Simulation time (minutes)")
+    ax.set_xlabel(f"{'Sim.' if short else 'Simulation'} time (minutes)")
 
 
 # Make figure panel titles with (a), (b), (c), etc
