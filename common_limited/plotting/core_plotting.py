@@ -80,7 +80,8 @@ def facet_xarray_ds(
             da = ds_or_da[value_col]
         else:
             raise ValueError(
-                "ds_or_da must be either a DataArrray or a Dataset with a str passed in for value_col"
+                "ds_or_da must be either a DataArrray or a Dataset with a str passed in"
+                " for value_col"
             )
     # Need to calculate the global min/max here since _inner_facet won't see all of the values
     vmax = da.max().values
@@ -331,6 +332,77 @@ def add_row_header(ax, text, pad=4, **kwargs):
 
     annotation_kwargs.update(kwargs)
     return ax.annotate(text, **annotation_kwargs)
+
+
+def add_row_header_auto(ax, text, pad=None, **kwargs):
+    """
+    Add a row header to the left of an axes with automatic spacing.
+
+    Args:
+        ax: Matplotlib axes object
+        text: Text for the row header (can be multi-line)
+        pad: Manual padding offset. If None, calculated automatically
+        **kwargs: Additional arguments passed to annotate()
+
+    Returns:
+        The annotation object
+    """
+    # Split text into lines to handle multi-line text
+    lines = text.split("\n") if isinstance(text, str) else [str(text)]
+    n_lines = len(lines)
+
+    # Calculate automatic padding based on various factors
+    if pad is None:
+        # Base padding from ylabel
+        base_pad = ax.yaxis.labelpad if hasattr(ax.yaxis, "labelpad") else 5
+
+        # Additional padding for tick labels
+        tick_width = 0
+        if ax.yaxis.get_ticklabels():
+            # Estimate width of tick labels
+            tick_texts = [label.get_text() for label in ax.yaxis.get_ticklabels()]
+            if tick_texts:
+                max_tick_len = max(len(str(t)) for t in tick_texts if t)
+                tick_width = max_tick_len * 8  # Approximate character width in points
+
+        # Additional padding for ylabel if present
+        ylabel_width = 0
+        if ax.yaxis.get_label().get_text():
+            ylabel_width = 20  # Approximate width for rotated ylabel
+
+        # Extra padding for multi-line text
+        multiline_pad = (n_lines - 1) * 10 if n_lines > 1 else 0
+
+        # Calculate total padding
+        pad = base_pad + tick_width + ylabel_width + multiline_pad + 15
+
+    # Handle multi-line text positioning
+    if n_lines > 1:
+        # For multi-line text, adjust vertical alignment
+        va = kwargs.get("va", "center")
+        # Join lines back together for display
+        display_text = "\n".join(lines)
+    else:
+        va = kwargs.get("va", "center")
+        display_text = text
+
+    # Set up annotation arguments with automatic spacing
+    annotation_kwargs = {
+        "xy": (0, 0.5),
+        "xytext": (-pad, 0),
+        "xycoords": "axes fraction",  # More reliable than ax.yaxis.label
+        "textcoords": "offset points",
+        "rotation": 90,
+        "fontsize": kwargs.get("fontsize", 16),  # Slightly smaller default
+        "ha": "center",
+        "va": va,
+        "fontweight": "bold",
+    }
+
+    # Update with user-provided kwargs
+    annotation_kwargs.update(kwargs)
+
+    return ax.annotate(display_text, **annotation_kwargs)
 
 
 def animate_xarray_ds(

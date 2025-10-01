@@ -20,7 +20,7 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 
 # User packages
-import common as cm
+import common_limited as cm
 
 ########################################################################
 ############################## Parameters ##############################
@@ -39,25 +39,32 @@ STORM_LABELS_SHORT = {
     "sc_wk": "Supercell",
 }
 
-# Matplotlib style to use; this is the format for passing matplotlib a filepath
-# rather than a name in your stylelib
-MPL_STYLE = f"file://{Path(__file__).parent.joinpath('cd_bl_slides.mplstyle')}"
-
 # Random seed
 SEED = 325976123
 
 # # Path to this file
-this_dir = Path(__file__).parent
+this_dir = Path(__file__).parent.parent
 # Set data and figure relative paths
 FIGS_DIR = this_dir.joinpath("figures")
 DATA_DIR = this_dir.joinpath("data")
 DERIVED_DIR = DATA_DIR.joinpath("derived")
 FIGURE_DATA_DIR = DATA_DIR.joinpath("figure_data")
 
+# Matplotlib style to use; this is the format for passing matplotlib a filepath
+# rather than a name in your stylelib
+MPL_STYLE = f"file://{this_dir.joinpath('cd_bl_slides.mplstyle')}"
+
 
 # Condensate loading and vertical velocity thresholds for what constitutes in-updraft gridpoints
 IN_UPDRAFT_R_CONDENSATE_THRESHOLD = 1e-4  # kg/kg
 IN_UPDRAFT_W_THRESHOLD = 1  # m/s
+
+# Same for anvil (points are defined where the magnitude of vertical motion is
+# less than the updraft threshold)
+# Following McGee and van den Heever (2014)
+ANVIL_R_CONDENSATE_THRESHOLD = 1e-5  # kg/kg
+ANVIL_W_THRESHOLD = 1  # m/s (magnitude must be less than this)
+ANVIL_Z_THRESHOLD = 10_000  # m
 
 # Address of the dask cluster scheduler
 DASK_SCHEDULER_ADDRESS = "127.0.0.1:8786"
@@ -93,6 +100,7 @@ STORM_VARIABLES_USED = [
 
 # Start time of the simulations
 SIMULATION_START_TIME = pd.Timestamp("1991-04-26 21:00:00")
+SIMULATION_END_TIME = pd.Timestamp("1991-04-27 00:00:00")
 
 # Progressive colormap to use where relevant
 PROGRESSIVE_CMAP = "viridis"
@@ -108,6 +116,12 @@ PROGRESSIVE_CMAP = "viridis"
 # Paths to precalculated tracer vertical profile datasets
 TRACER_TOTALS_PROFILE_FILEPATHS = {
     storm: DERIVED_DIR.joinpath(storm).joinpath("tracer_totals_profile_ds.nc")
+    for storm in STORM_NAMES
+}
+
+# Same for the upper-level tracer totals
+UL_TRACER_TOTALS_FILEPATHS = {
+    storm: DERIVED_DIR.joinpath(storm).joinpath("ul_tracer_totals_ds.nc")
     for storm in STORM_NAMES
 }
 
@@ -192,6 +206,13 @@ def calculate_derived_variables(storm_ds, storm_name):
         storm_ds["R_condensate"] >= IN_UPDRAFT_R_CONDENSATE_THRESHOLD
     ) & (storm_ds["WC"] >= IN_UPDRAFT_W_THRESHOLD)
 
+    # Add an in-anvil flag
+    storm_ds["in_anvil"] = (
+        (storm_ds["R_condensate"] >= ANVIL_R_CONDENSATE_THRESHOLD)
+        & (np.absolute(storm_ds["WC"]) < ANVIL_W_THRESHOLD)
+        & (storm_ds["z"] >= ANVIL_Z_THRESHOLD)
+    )
+
     if storm_name == "sc_wk":
         storm_ds["in_right_mover"] = sc_wk_in_right_mover(storm_ds["x"], storm_ds["y"])
 
@@ -221,6 +242,13 @@ def calculate_derived_variables(storm_ds, storm_name):
 
     # Add a flag for whether a gridpoint should be included in analysis
     storm_ds["in_analysis"] = ANALYSIS_FLAG_FUNCTIONS[storm_name](storm_ds)
+
+    # Add a mm/hr version of pcprr
+    storm_ds["PCPRR_mm_hr"] = (
+        (storm_ds["PCPRR"] * units("kg/m^2/s") / mpconstants.density_water)
+        .pint.to("mm/hr")
+        .pint.dequantify()
+    )
 
     return storm_ds
 
@@ -355,13 +383,11 @@ def calculate_tracer_profile_ds(storm_ds):
             ["x", "y"]
         )
         # Rename all the variables
-        this_time_ss_ds = this_time_ss_ds.rename(
-            {
-                var: "ss_" + var
-                for var in this_time_ss_ds.data_vars
-                if var != "supersaturated"
-            }
-        )
+        this_time_ss_ds = this_time_ss_ds.rename({
+            var: "ss_" + var
+            for var in this_time_ss_ds.data_vars
+            if var != "supersaturated"
+        })
         tracer_totals_list.append(this_time_ss_ds.compute())
 
         # Now sum up the accumulated (2d) tracers
@@ -415,6 +441,10 @@ def calculate_development_dataframe(storm_ds):
         .compute()
     )
 
+    anvil_mass = (
+        storm_ds.where(storm_ds["in_anvil"])["air_mass"].sum(["x", "y", "z"]).compute()
+    )
+
     total_rain = storm_ds["PCPRR"].sum(["x", "y"]).compute()
 
     rain_by_threshold = {
@@ -426,6 +456,7 @@ def calculate_development_dataframe(storm_ds):
         "t_minutes": storm_ds["t_minutes"],
         "max_updraft": max_updrafts,
         "updraft_mass": updraft_mass,
+        "anvil_mass": anvil_mass,
         "total_rain": total_rain,
         "storm_centroid_x": storm_centroids[0],
         "storm_centroid_y": storm_centroids[1],
