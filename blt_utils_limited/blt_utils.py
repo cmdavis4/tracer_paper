@@ -120,10 +120,16 @@ TRACER_TOTALS_PROFILE_FILEPATHS = {
 }
 
 # Same for the upper-level tracer totals
+
 UL_TRACER_TOTALS_FILEPATHS = {
-    storm: DERIVED_DIR.joinpath(storm).joinpath("ul_tracer_totals_ds.nc")
+    storm: DERIVED_DIR.joinpath(storm).joinpath("ul_tracer_totals_7km_ds.pkl")
     for storm in STORM_NAMES
 }
+
+# Path to directory where z=10km fluxes are stored
+# These are four different dicts which each have the storms as keys, so
+# just store them in the top-level derived directory
+Z10KM_FLUXES_DIR = DERIVED_DIR
 
 # Paths to storm development dataframes
 DEVELOPMENT_DATAFRAME_FILEPATHS = {
@@ -339,6 +345,10 @@ def postprocess_storm_ds(ds, storm_name, lite=False):
         for tracer_var in FS_TRACERS:
             ds["total_fs_tracer"] = ds["total_fs_tracer"] + ds[tracer_var]
             ds["ACCtotal_fs_tracer"] = ds["ACCtotal_fs_tracer"] + ds["ACC" + tracer_var]
+        # Make number concentration versions of all of the tracer variables
+        for var in ds.data_vars:
+            if "tracer" in var.lower():
+                ds[var + "_nc"] = ds[var] * ds["air_mass"]
     return ds
 
 

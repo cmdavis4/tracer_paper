@@ -2,6 +2,8 @@ import re
 import datetime as dt
 import numpy as np
 from pathlib import Path
+import pickle as pkl
+from functools import wraps
 
 
 def str_to_key(key_str, parse_ints=True):
@@ -82,3 +84,78 @@ def raise_if_exists(fpath):
 
 def append_to_stem(fpath, appendage):
     return Path(fpath).with_stem(fpath.stem + appendage)
+
+
+def read_or_cache_to(filepath):
+    """Decorator that caches function results to a pickle file.
+
+    If the filepath exists, loads and returns the cached result.
+    Otherwise, calls the function, saves the result to the filepath, and returns it.
+
+    Args:
+        filepath: Path to the pickle file for caching
+    """
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            path = Path(filepath)
+            if path.exists():
+                result = read_file(filepath)
+                print(f"Read result from {str(filepath)}")
+                return result
+            else:
+                print(f"No file at {str(filepath)}, computing")
+                result = func(*args, **kwargs)
+                # These computations are generally expensive so be sure to return
+                # the result even if the filepath to cache to is bad
+                try:
+                    with open(path, "wb") as f:
+                        pkl.dump(result, f)
+                    print(f"Wrote computation result to f{str(filepath)}")
+                except:
+                    print(
+                        f"Failed to write to {str(filepath)}; returning result without"
+                        " caching"
+                    )
+
+                return result
+
+        return wrapper
+
+    return decorator
+
+
+def read_file(filepath, *args, **kwargs):
+    """Read a file using the appropriate library based on its extension.
+
+    Args:
+        filepath: Path to the file to read
+
+    Returns:
+        File contents loaded with the appropriate library
+
+    Supported formats:
+        - .nc: xarray.open_dataset
+        - .npy: numpy.load
+        - .csv: pandas.read_csv
+        - .pkl: pickle
+    """
+    path = Path(filepath)
+    ext = path.suffix.lower()
+
+    if ext == ".nc":
+        import xarray as xr
+
+        return xr.open_dataset(path, *args, **kwargs)
+    elif ext == ".npy":
+        return np.load(path, *args, **kwargs)
+    elif ext == ".csv":
+        import pandas as pd
+
+        return pd.read_csv(path, *args, **kwargs)
+    elif ext == ".pkl":
+        with path.open("rb") as f:
+            return pkl.load(f, *args, **kwargs)
+    else:
+        raise ValueError(f"Unsupported file extension: {ext}")
