@@ -59,6 +59,9 @@ MPL_STYLE = f"file://{this_dir.joinpath('cd_bl_slides.mplstyle')}"
 IN_UPDRAFT_R_CONDENSATE_THRESHOLD = 1e-4  # kg/kg
 IN_UPDRAFT_W_THRESHOLD = 1  # m/s
 
+# Height cutoff for upper level tracer concentration calculations
+UL_TRACER_TOTALS_Z_THRESHOLD = 7_000
+
 # Same for anvil (points are defined where the magnitude of vertical motion is
 # less than the updraft threshold)
 # Following McGee and van den Heever (2014)
@@ -120,16 +123,19 @@ TRACER_TOTALS_PROFILE_FILEPATHS = {
 }
 
 # Same for the upper-level tracer totals
-
 UL_TRACER_TOTALS_FILEPATHS = {
-    storm: DERIVED_DIR.joinpath(storm).joinpath("ul_tracer_totals_7km_ds.pkl")
+    storm: (
+        DERIVED_DIR.joinpath(storm).joinpath(
+            f"ul_tracer_totals_ds_z-{UL_TRACER_TOTALS_Z_THRESHOLD}.pkl"
+        )
+    )
     for storm in STORM_NAMES
 }
 
 # Path to directory where z=10km fluxes are stored
 # These are four different dicts which each have the storms as keys, so
 # just store them in the top-level derived directory
-Z10KM_FLUXES_DIR = DERIVED_DIR
+UL_FLUXES_DIR = DERIVED_DIR
 
 # Paths to storm development dataframes
 DEVELOPMENT_DATAFRAME_FILEPATHS = {
