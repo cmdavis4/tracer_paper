@@ -112,7 +112,7 @@ def read_or_cache_to(filepath):
                 try:
                     with open(path, "wb") as f:
                         pkl.dump(result, f)
-                    print(f"Wrote computation result to f{str(filepath)}")
+                    print(f"Wrote computation result to {str(filepath)}")
                 except:
                     print(
                         f"Failed to write to {str(filepath)}; returning result without"

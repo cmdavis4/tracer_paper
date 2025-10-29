@@ -59,9 +59,6 @@ MPL_STYLE = f"file://{this_dir.joinpath('cd_bl_slides.mplstyle')}"
 IN_UPDRAFT_R_CONDENSATE_THRESHOLD = 1e-4  # kg/kg
 IN_UPDRAFT_W_THRESHOLD = 1  # m/s
 
-# Height cutoff for upper level tracer concentration calculations
-UL_TRACER_TOTALS_Z_THRESHOLD = 7_000
-
 # Same for anvil (points are defined where the magnitude of vertical motion is
 # less than the updraft threshold)
 # Following McGee and van den Heever (2014)
@@ -122,11 +119,18 @@ TRACER_TOTALS_PROFILE_FILEPATHS = {
     for storm in STORM_NAMES
 }
 
+# Height thresholds for defining upper levels
+# All of the ones we calculated for sensitivity tests
+ALL_UL_Z_THRESHOlDS = [7, 8, 9, 10]  # km
+
+# The one we actually use
+UL_Z_THRESHOLD = 10  # km
+
 # Same for the upper-level tracer totals
 UL_TRACER_TOTALS_FILEPATHS = {
     storm: (
         DERIVED_DIR.joinpath(storm).joinpath(
-            f"ul_tracer_totals_ds_z-{UL_TRACER_TOTALS_Z_THRESHOLD}.pkl"
+            f"ul_tracer_totals_ds_z-{UL_Z_THRESHOLD}.pkl"
         )
     )
     for storm in STORM_NAMES
@@ -217,13 +221,6 @@ def calculate_derived_variables(storm_ds, storm_name):
     storm_ds["in_updraft"] = (
         storm_ds["R_condensate"] >= IN_UPDRAFT_R_CONDENSATE_THRESHOLD
     ) & (storm_ds["WC"] >= IN_UPDRAFT_W_THRESHOLD)
-
-    # Add an in-anvil flag
-    storm_ds["in_anvil"] = (
-        (storm_ds["R_condensate"] >= ANVIL_R_CONDENSATE_THRESHOLD)
-        & (np.absolute(storm_ds["WC"]) < ANVIL_W_THRESHOLD)
-        & (storm_ds["z"] >= ANVIL_Z_THRESHOLD)
-    )
 
     if storm_name == "sc_wk":
         storm_ds["in_right_mover"] = sc_wk_in_right_mover(storm_ds["x"], storm_ds["y"])
