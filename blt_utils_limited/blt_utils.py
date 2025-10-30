@@ -20,7 +20,7 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 
 # User packages
-import common_limited as cm
+import common as cm
 
 ########################################################################
 ############################## Parameters ##############################
@@ -121,7 +121,8 @@ TRACER_TOTALS_PROFILE_FILEPATHS = {
 
 # Height thresholds for defining upper levels
 # All of the ones we calculated for sensitivity tests
-ALL_UL_Z_THRESHOlDS = [7, 8, 9, 10]  # km
+# ALL_UL_Z_THRESHOlDS = [7, 8, 9, 10]  # km
+ALL_UL_Z_THRESHOlDS = [10]  # km
 
 # The one we actually use
 UL_Z_THRESHOLD = 10  # km
