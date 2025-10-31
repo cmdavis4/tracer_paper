@@ -7,5 +7,41 @@
 			"path": "../common"
 		}
 	],
-	"settings": {}
+	"settings": {
+		// Colorblind-friendly terminal colors for Jupyter notebook error output
+		"workbench.colorCustomizations": {
+			// Customize ANSI colors to ensure good contrast for colorblind users
+			// Yellow text - make it more distinct from green
+			"terminal.ansiYellow": "#FFCC00",
+			"terminal.ansiBrightYellow": "#FFFF00",
+
+			// Green - use a more distinct shade
+			"terminal.ansiGreen": "#00CC66",
+			"terminal.ansiBrightGreen": "#00FF99",
+
+			// Red - standard red
+			"terminal.ansiRed": "#FF0000",
+			"terminal.ansiBrightRed": "#FF6666",
+
+			// Cyan - make more distinct
+			"terminal.ansiCyan": "#00CCCC",
+			"terminal.ansiBrightCyan": "#00FFFF",
+
+			// Magenta - ensure good contrast
+			"terminal.ansiMagenta": "#CC00CC",
+			"terminal.ansiBrightMagenta": "#FF00FF",
+
+			// White/Gray for text
+			"terminal.ansiWhite": "#CCCCCC",
+			"terminal.ansiBrightWhite": "#FFFFFF",
+
+			// Black/Background colors
+			"terminal.ansiBlack": "#000000",
+			"terminal.ansiBrightBlack": "#666666",
+
+			// Blue - standard blue
+			"terminal.ansiBlue": "#0066FF",
+			"terminal.ansiBrightBlue": "#6699FF"
+		}
+	}
 }
