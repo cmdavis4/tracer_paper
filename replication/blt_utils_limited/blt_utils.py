@@ -45,10 +45,10 @@ SEED = 325976123
 # # Path to this file
 this_dir = Path(__file__).parent.parent
 # Set data and figure relative paths
-FIGS_DIR = this_dir.joinpath("figures")
+FIGS_DIR = this_dir.joinpath("paper_figures")
 DATA_DIR = this_dir.joinpath("data")
 DERIVED_DIR = DATA_DIR.joinpath("derived")
-FIGURE_DATA_DIR = DATA_DIR.joinpath("figure_data")
+FIGURE_DATA_DIR = FIGS_DIR.joinpath("figure_data")
 
 # Matplotlib style to use; this is the format for passing matplotlib a filepath
 # rather than a name in your stylelib
