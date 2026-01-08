@@ -20,7 +20,7 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 
 # User packages
-import common as cm
+import clouded as cm
 
 ########################################################################
 ############################## Parameters ##############################
@@ -43,16 +43,17 @@ STORM_LABELS_SHORT = {
 SEED = 325976123
 
 # # Path to this file
-this_dir = Path(__file__).parent.parent
+PROJECT_DIR = Path(__file__).parent.parent.parent
+REPLICATION_DIR = PROJECT_DIR / "replication"
 # Set data and figure relative paths
-FIGS_DIR = this_dir.joinpath("paper_figures")
-DATA_DIR = this_dir.joinpath("data")
-DERIVED_DIR = DATA_DIR.joinpath("derived")
-FIGURE_DATA_DIR = FIGS_DIR.joinpath("figure_data")
+FIGS_DIR = PROJECT_DIR / "paper_figures"
+DATA_DIR = REPLICATION_DIR / "data"
+DERIVED_DIR = DATA_DIR / "derived"
+FIGURE_DATA_DIR = FIGS_DIR / "figure_data"
 
 # Matplotlib style to use; this is the format for passing matplotlib a filepath
 # rather than a name in your stylelib
-MPL_STYLE = f"file://{this_dir.joinpath('cd_bl_slides.mplstyle')}"
+MPL_STYLE = f"file://{PROJECT_DIR / "replication" / 'cd_bl_slides.mplstyle'}"
 
 
 # Condensate loading and vertical velocity thresholds for what constitutes in-updraft gridpoints
