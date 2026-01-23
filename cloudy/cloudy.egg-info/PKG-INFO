@@ -1,0 +1,280 @@
+Metadata-Version: 2.4
+Name: cloudy
+Version: 1.0.0
+Summary: cloudy utilities for atmospheric modeling and visualization
+Author-email: Your Name <your.email@example.com>
+License: MIT
+Project-URL: Homepage, https://github.com/yourusername/cloudy
+Project-URL: Repository, https://github.com/yourusername/cloudy
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: xarray
+Requires-Dist: pint
+Requires-Dist: pint-xarray
+Requires-Dist: metpy
+Requires-Dist: tqdm
+Requires-Dist: h5netcdf
+Requires-Dist: matplotlib
+Provides-Extra: rams
+Requires-Dist: metpy; extra == "rams"
+Requires-Dist: tqdm; extra == "rams"
+Provides-Extra: trajectories
+Requires-Dist: scipy; extra == "trajectories"
+Requires-Dist: jinja2; extra == "trajectories"
+Provides-Extra: pvplotting
+Requires-Dist: pyvista[jupyter]; extra == "pvplotting"
+Requires-Dist: scikit-image; extra == "pvplotting"
+Requires-Dist: meshio; extra == "pvplotting"
+Requires-Dist: ipython; extra == "pvplotting"
+Requires-Dist: ipywidgets; extra == "pvplotting"
+Requires-Dist: trame; extra == "pvplotting"
+Provides-Extra: blender
+Requires-Dist: numpy; extra == "blender"
+Requires-Dist: pandas; extra == "blender"
+Provides-Extra: vdb
+Requires-Dist: numpy; extra == "vdb"
+Requires-Dist: pyopenvdb; extra == "vdb"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: jupyter; extra == "dev"
+Requires-Dist: ipython; extra == "dev"
+Requires-Dist: ipywidgets; extra == "dev"
+Provides-Extra: all
+Requires-Dist: pandas; extra == "all"
+Requires-Dist: xarray; extra == "all"
+Requires-Dist: matplotlib; extra == "all"
+Requires-Dist: scipy; extra == "all"
+Requires-Dist: tqdm; extra == "all"
+Requires-Dist: jinja2; extra == "all"
+Requires-Dist: pint; extra == "all"
+Requires-Dist: pint-xarray; extra == "all"
+Requires-Dist: metpy; extra == "all"
+Requires-Dist: ipywidgets; extra == "all"
+Requires-Dist: ipython; extra == "all"
+Requires-Dist: scikit-image; extra == "all"
+Requires-Dist: meshio; extra == "all"
+Requires-Dist: pyvista; extra == "all"
+Requires-Dist: h5netcdf; extra == "all"
+Requires-Dist: pyopenvdb; extra == "all"
+Requires-Dist: pytest; extra == "all"
+Requires-Dist: jupyter; extra == "all"
+
+# cloudy
+
+Cloud and atmospheric data utilities for atmospheric modeling and visualization, with a focus on RAMS (Regional Atmospheric Modeling System) data processing and analysis.
+
+## Features
+
+This package provides modular tools for:
+
+- **RAMS** - RAMS atmospheric model data processing, analysis, and unit handling
+- **Trajectories** - Trajectory analysis and calculation
+- **Plotting** - Matplotlib-based plotting utilities
+- **PyVista Plotting** - 3D visualization with PyVista
+- **Blender** - Integration with Blender for high-quality rendering
+- **VDB** - Volume data conversion to OpenVDB format
+- **Utils** - Core utilities (always available)
+
+## Installation
+
+**Package name:** `cloudy`
+
+**Import:** `import cloudy as cd`
+
+The package supports **selective installation** - install only the submodules you need!
+
+### Basic Installation (Core utilities only)
+
+```bash
+pip install -e .
+# Or from path: pip install ~/projects/cloudy
+```
+
+This installs the `cloudy` package with core `rams`, `plotting`, and `utils` modules.
+
+**Import usage:**
+```python
+import cloudy as cd  # Recommended
+# Or: import cloudy
+```
+
+### Install Specific Submodules
+
+For scientific manuscript analysis (recommended for most users):
+```bash
+pip install -e .[rams,trajectories,plotting]
+```
+
+For 3D visualization work:
+```bash
+pip install -e .[pvplotting]
+```
+
+For Blender rendering:
+```bash
+pip install -e .[blender]
+```
+
+For VDB conversion:
+```bash
+pip install -e .[vdb]
+```
+
+### Install Everything
+
+```bash
+pip install -e .[all]
+```
+
+### Development Installation
+
+```bash
+pip install -e .[dev]
+```
+
+This includes pytest, jupyter, and other development tools.
+
+### Julia Setup for Trajectories Module
+
+The `trajectories` submodule requires Julia and several Julia packages. There are two ways to set this up:
+
+#### Option 1: Automatic Setup (Recommended)
+
+The first time you use the trajectories module, it will automatically install the required Julia packages. Just make sure Julia is installed:
+
+**Using pixi (Recommended):**
+```bash
+# In your project directory
+pixi add julia
+```
+
+**Manual Julia installation:**
+Download from [julialang.org/downloads/](https://julialang.org/downloads/)
+
+Then use the trajectories module normally - packages will be installed on first use.
+
+#### Option 2: Manual Setup
+
+Run the setup script:
+```bash
+python setup_julia.py
+```
+
+**Using pixi:**
+```bash
+pixi run python setup_julia.py
+```
+
+#### Required Julia Packages
+
+The following Julia packages are automatically installed (listed in `Project.toml`):
+- NCDatasets
+- Interpolations
+- LabelledArrays
+- Dates
+- FilePathsBase
+- OrderedCollections
+- Plots
+- DataFrames
+- CSV
+- JLD2
+- ProgressBars
+
+## Available Installation Extras
+
+| Extra | Description | Key Dependencies |
+|-------|-------------|------------------|
+| `rams` | RAMS atmospheric modeling utilities | pandas, xarray, metpy, pint |
+| `trajectories` | Trajectory analysis **⚠️ Requires Julia** | pandas, xarray, scipy, Julia |
+| `plotting` | Matplotlib plotting | matplotlib, pandas |
+| `pvplotting` | PyVista 3D visualization | pyvista |
+| `blender` | Blender integration | (minimal) |
+| `vdb` | VDB volume conversion | pyopenvdb |
+| `dev` | Development tools | pytest, jupyter |
+| `all` | All submodules | (all of the above) |
+
+## Usage
+
+The package automatically imports only the submodules you have installed:
+
+```python
+import cloudy
+
+# Always available
+cloudy.utils
+
+# Available if installed with [rams]
+cloudy.rams
+
+# Available if installed with [trajectories]
+cloudy.trajectories
+
+# Available if installed with [plotting]
+cloudy.plotting
+
+# Available if installed with [pvplotting]
+cloudy.pvplotting
+```
+
+If you try to import a submodule you haven't installed, the package will tell you which extra to install.
+
+## Example Workflows
+
+### For a scientific manuscript using RAMS data
+
+```bash
+# In your manuscript project environment
+pip install -e /path/to/cloudy[rams,plotting]
+```
+
+```python
+import cloudy
+import cloudy.rams as rams
+
+# Use RAMS utilities for analysis
+ds = rams.eread_rams_output(...)
+ds = rams.calculate_thermodynamic_variables(ds)
+```
+
+### For 3D visualization projects
+
+```bash
+pip install -e /path/to/cloudy[rams,pvplotting]
+```
+
+```python
+import cloudy.pvplotting as pvp
+
+# Use PyVista plotting
+plotter = pvp.create_plotter(...)
+```
+
+## Environment Detection
+
+The package automatically detects special environments:
+
+- **Blender environment** - Only imports blender module
+- **VDB environment** - Only imports vdb module (to avoid dependency conflicts)
+- **Regular Python** - Imports all installed submodules
+
+## Contributing
+
+This is a personal utilities package but contributions are welcome. Make sure to run tests:
+
+```bash
+pip install -e .[dev,all]
+pytest tests/
+```
+
+## License
+
+MIT

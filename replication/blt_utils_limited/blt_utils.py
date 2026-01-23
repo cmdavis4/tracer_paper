@@ -20,7 +20,7 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 
 # User packages
-import clouded as cm
+import cloudy as cm
 
 ########################################################################
 ############################## Parameters ##############################

@@ -1,0 +1,32 @@
+{
+  "name": "RAMS",
+  "description": "Regional Atmospheric Modeling System configuration",
+
+  "variables": {
+    "u_wind": "UC",
+    "v_wind": "VC",
+    "w_wind": "WC"
+  },
+
+  "dimensions": {
+    "x": "x",
+    "y": "y",
+    "z": "z",
+    "time": "time"
+  },
+
+  "file_naming": {
+    "pattern": "a-L-{datetime}-g{grid:d}.h5",
+    "datetime_format": "yyyy-mm-dd-HHMMSS"
+  },
+
+  "grid_stagger": {
+    "u_wind": {"x": 0.5, "y": 0.0, "z": 0.0},
+    "v_wind": {"x": 0.0, "y": 0.5, "z": 0.0},
+    "w_wind": {"x": 0.0, "y": 0.0, "z": 0.5},
+    "default": {"x": 0.0, "y": 0.0, "z": 0.0},
+    "z_ix_z0": 0.5
+  },
+
+  "reader_type": "rams"
+}

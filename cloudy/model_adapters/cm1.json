@@ -1,0 +1,32 @@
+{
+  "name": "CM1",
+  "description": "Cloud Model 1 configuration",
+
+  "variables": {
+    "u_wind": "uinterp",
+    "v_wind": "vinterp",
+    "w_wind": "winterp"
+  },
+
+  "dimensions": {
+    "x": "xh",
+    "y": "yh",
+    "z": "zh",
+    "time": "time"
+  },
+
+  "file_naming": {
+    "pattern": "cm1out_{timestep:06d}.nc",
+    "datetime_format": null
+  },
+
+  "grid_stagger": {
+    "u_wind": {"x": 0.0, "y": 0.0, "z": 0.0},
+    "v_wind": {"x": 0.0, "y": 0.0, "z": 0.0},
+    "w_wind": {"x": 0.0, "y": 0.0, "z": 0.0},
+    "default": {"x": 0.0, "y": 0.0, "z": 0.0},
+    "z_ix_z0": -0.5
+  },
+
+  "reader_type": "netcdf"
+}
