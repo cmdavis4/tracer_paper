@@ -122,7 +122,7 @@ LITE_OUTPUT_INTERVAL_SECONDS = 2
 # Height thresholds for defining upper levels
 # All of the ones we calculated for sensitivity tests
 # (the lower-case "l" in the name is historical; notebooks use it as spelled)
-ALL_UL_Z_THRESHOlDS = [10]  # km
+ALL_UL_Z_THRESHOlDS = [7, 8, 9, 10]  # km
 
 # The one we actually use
 UL_Z_THRESHOLD = 10  # km
@@ -928,13 +928,17 @@ def calculate_upper_level_tracer_dataframe(storm_ds, upper_level_z_threshold_m):
     )
 
 
-def read_upper_level_lite_dataset(storm, upper_level_z_threshold_m):
-    """Read one model level of a storm's 2-second lite output, with air density.
+def read_upper_level_lite_dataset(storm, upper_level_z_thresholds_m):
+    """Read one or more model levels of a storm's 2-second lite output, with density.
 
     Mechanism: lite files exist for every 2 seconds from the simulation start to
     its end, so the file list is built from those times. A missing file raises
     rather than leaving a gap in the time integral. Each file is cut down to the
-    single level nearest the threshold height as it is read.
+    level(s) nearest the threshold height(s) as it is read.
+
+    Reading several levels costs little more than reading one. The lite files
+    store each variable compressed in chunks that span the full column, so the
+    whole column is decompressed to get even a single level.
 
     Air density is computed from pressure, temperature and vapour mixing ratio,
     because lite files carry no base-state density DN0. The formulas match
@@ -943,9 +947,15 @@ def read_upper_level_lite_dataset(storm, upper_level_z_threshold_m):
     condensate, vorticity and rain rate. Those need variables that a lite file
     can omit: the squall line's lite files carry only WC, THETA, PI and RV.
 
+    Args:
+        storm: Storm name, a key of ``RAMS_OUTPUT_DIRS``.
+        upper_level_z_thresholds_m: One height in m, or a list of heights. A single
+            height gives a scalar ``z`` coordinate; a list gives a ``z`` dimension
+            with one entry per height, in the order given.
+
     Returns:
-        A dataset with WC and air_density on (time, y, x), chunked so each chunk is
-        one whole horizontal level at one time.
+        A dataset with WC and air_density on (time, [z,] y, x), chunked so each
+        chunk is one whole horizontal level at one time.
     """
     # Every 2-second lite output time, formatted the way RAMS names its files
     lite_output_datetime_strings = (
@@ -968,13 +978,13 @@ def read_upper_level_lite_dataset(storm, upper_level_z_threshold_m):
             f" are missing for {storm}, starting with {missing_lite_filepaths[0]}"
         )
 
-    # Read only the level nearest the threshold height from each file
+    # Read only the level(s) nearest the threshold height(s) from each file
     lite_ds = cm.rams.read_rams_output(
         input_filenames=lite_filepaths,
         time_dim_name="time",
         units=False,
         preprocess=lambda ds: ds.sel(
-            {"z": upper_level_z_threshold_m}, method="nearest", drop=False
+            {"z": upper_level_z_thresholds_m}, method="nearest", drop=False
         ),
     )
 
@@ -1001,12 +1011,15 @@ def read_upper_level_lite_dataset(storm, upper_level_z_threshold_m):
         .pint.dequantify()
     )
 
-    # Rechunk to full horizontal layer per chunk
-    return (
-        lite_ds[["WC", "air_density"]]
-        .chunk({"x": len(lite_ds["x"].values), "y": len(lite_ds["y"].values)})
-        .unify_chunks()
-    )
+    # Rechunk to full horizontal layer per chunk (and one level per chunk, when
+    # several levels were read)
+    full_layer_chunks = {
+        "x": len(lite_ds["x"].values),
+        "y": len(lite_ds["y"].values),
+    }
+    if "z" in lite_ds.dims:
+        full_layer_chunks["z"] = 1
+    return lite_ds[["WC", "air_density"]].chunk(full_layer_chunks).unify_chunks()
 
 
 def calculate_cumulative_mass_flux(lite_level_ds, output_times):
@@ -1014,7 +1027,8 @@ def calculate_cumulative_mass_flux(lite_level_ds, output_times):
 
     Mechanism: at each 2-second lite output time, the mass through each gridpoint
     of the level is ``w * rho * dx^2 * dt``, with dt the 2-second lite interval.
-    Gridpoints with w > 0 make up the upward flux. The downward flux is the total
+    Gridpoints with w > 0 make up the upward flux. When the dataset holds
+    several levels (a ``z`` dimension), each level is integrated separately. The downward flux is the total
     minus the upward part, so it is negative. Both are summed over the level and
     accumulated in time, then sampled at the 5-minute analysis times so they line
     up with the other upper-level quantities.
@@ -1061,16 +1075,94 @@ def calculate_cumulative_mass_flux(lite_level_ds, output_times):
     )
 
 
-def calculate_upper_level_mass_flux(storm, upper_level_z_threshold_m, output_times):
+def calculate_upper_level_mass_flux(storm, upper_level_z_thresholds_m, output_times):
     """Read a storm's lite output and integrate its upper-level mass flux.
 
     This chains ``read_upper_level_lite_dataset`` and
-    ``calculate_cumulative_mass_flux`` and computes the result, so it can be
-    handed to ``read_or_cache_pickle`` as one callable. Expect it to take tens of
-    minutes per storm, because it opens all 5401 lite files.
+    ``calculate_cumulative_mass_flux`` and computes the result. Pass one height
+    for a single level, or a list of heights to integrate them all in one pass
+    over the files. Expect it to take tens of minutes per storm, because it opens
+    all 5401 lite files.
     """
-    lite_level_ds = read_upper_level_lite_dataset(storm, upper_level_z_threshold_m)
+    lite_level_ds = read_upper_level_lite_dataset(storm, upper_level_z_thresholds_m)
     return calculate_cumulative_mass_flux(lite_level_ds, output_times).compute()
+
+
+def upper_level_mass_flux_cache_path(storm, z_km):
+    """Cache file for one storm's upper-level mass flux at one height (in km)."""
+    return UPPER_LEVEL_DERIVED_DIRS[storm] / f"ul_mass_fluxes_z-{z_km * 1000}.pkl"
+
+
+def read_or_compute_upper_level_mass_fluxes(storm, z_kms, output_times):
+    """Load a storm's upper-level mass flux at several heights, computing any missing.
+
+    Mechanism: each height has its own cache file, from
+    ``upper_level_mass_flux_cache_path``. A cache is used when it exists and covers
+    every output time. All heights without a usable cache are then computed
+    together, in a single pass over the lite files, and each is written to its own
+    file. Computing four heights therefore takes about as long as computing one.
+
+    Each returned Dataset has a scalar ``z`` coordinate, the model level actually
+    used. That is the same form a single-height computation produces, so caches
+    written either way are interchangeable.
+
+    Args:
+        storm: Storm name.
+        z_kms: Threshold heights, in km.
+        output_times: The 5-minute analysis times to sample the running totals at.
+
+    Returns:
+        Mapping of height in km -> Dataset with ``cumu_upward_mass_flux`` and
+        ``cumu_downward_mass_flux``.
+    """
+    expected_time_count = len(output_times)
+    flux_dss_by_height = {}
+
+    # Use every cache that exists and covers every output time
+    for z_km in z_kms:
+        cache_path = upper_level_mass_flux_cache_path(storm, z_km)
+        if not cache_path.exists():
+            continue
+        cached_flux_ds = pd.read_pickle(cache_path)
+        if _time_count_of_result(cached_flux_ds) == expected_time_count:
+            print(f"Read cached result from {cache_path}")
+            flux_dss_by_height[z_km] = cached_flux_ds
+        else:
+            print(
+                f"Stale cache at {cache_path}: it holds"
+                f" {_time_count_of_result(cached_flux_ds)} times but the run has"
+                f" {expected_time_count}. Recomputing and overwriting it."
+            )
+
+    # Compute every remaining height in one pass over the lite files
+    heights_to_compute_km = [z_km for z_km in z_kms if z_km not in flux_dss_by_height]
+    if heights_to_compute_km:
+        print(
+            f"Computing the {storm} upper-level mass flux at"
+            f" {heights_to_compute_km} km from the lite output..."
+        )
+        all_heights_flux_ds = calculate_upper_level_mass_flux(
+            storm,
+            [z_km * 1000 for z_km in heights_to_compute_km],
+            output_times,
+        )
+
+        # Split by height, and write each height to its own cache file
+        for level_ix, z_km in enumerate(heights_to_compute_km):
+            flux_ds = all_heights_flux_ds.isel({"z": level_ix})
+            if _time_count_of_result(flux_ds) != expected_time_count:
+                raise ValueError(
+                    f"The {storm} flux at {z_km} km has"
+                    f" {_time_count_of_result(flux_ds)} times but"
+                    f" {expected_time_count} were expected. Not caching it."
+                )
+            cache_path = upper_level_mass_flux_cache_path(storm, z_km)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.to_pickle(flux_ds, cache_path)
+            print(f"Wrote result to {cache_path}")
+            flux_dss_by_height[z_km] = flux_ds
+
+    return {z_km: flux_dss_by_height[z_km] for z_km in z_kms}
 
 
 ################################################################################
