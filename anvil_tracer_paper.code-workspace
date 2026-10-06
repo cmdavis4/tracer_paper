@@ -6,5 +6,10 @@
 		{
 			"path": "../carlee/xarrams"
 		}
-	]
+	],
+	"settings": {
+		// cloudy installs through an import hook that Pylance cannot follow, so
+		// point Pylance at the in-repo source directly for tooltips and go-to-definition
+		"python.analysis.extraPaths": ["cloudy"]
+	}
 }
