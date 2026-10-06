@@ -1,3 +1,26 @@
+"""Analysis utilities for the boundary-layer tracer transport paper.
+
+This package holds everything the analysis notebook needs besides the notebook
+itself:
+
+* **The run registry.** Which RAMS simulation is analysed for each storm, and where
+  each run's raw output and derived products live. Every path in the analysis is
+  built from ``RUN_DIRS`` and ``DERIVED_DIRS``, so pointing the analysis at a
+  different set of runs means editing those two dictionaries and nothing else.
+* **Physical thresholds and tracer definitions** shared by every figure.
+* **Derived variables.** ``postprocess_storm_ds`` turns raw 5-minute analysis output
+  into the dataset the figures read: thermodynamics, in-updraft and in-anvil flags,
+  the per-storm analysis mask, and tracer number concentrations.
+* **Cached derived products.** The in-updraft tracer profiles, the storm development
+  dataframes, and the upper-level tracer totals and mass fluxes. Each is expensive
+  to compute, so each is cached on disk and checked against the run before it is
+  trusted (see ``read_or_cache_pickle``).
+* **Plotting and figure-data helpers.**
+
+Importing it as ``blt`` is the convention throughout the notebooks. The former name
+``blt_utils_limited`` still works and refers to this same module.
+"""
+
 ########################################################################
 ############################## Imports ##############################
 ########################################################################
@@ -11,13 +34,13 @@ from metpy.units import units
 import metpy.constants as mpconstants
 import metpy.calc as mpc
 import numpy as np
+
+# Imported for its side effect: it registers the `.pint` accessor on xarray objects,
+# which the unit conversions below rely on
 import pint_xarray
 from tqdm.notebook import tqdm
 import xarray as xr
 import pickle as pkl
-from scipy import interpolate
-import matplotlib.image as mpimg
-import matplotlib.pyplot as plt
 
 # User packages
 import cloudy as cm
@@ -26,8 +49,10 @@ import cloudy as cm
 ############################## Parameters ##############################
 ########################################################################
 
+# Short names of the three storms, in the order every figure shows them
+STORM_NAMES = ["ic_wk", "sl_wk", "sc_wk"]
+
 # Mapping from storm short name to human-readable name
-STORM_NAMES = ["ic_wk"]
 STORM_LABELS = {
     "ic_wk": "Isolated convection",
     "sl_wk": "Squall line",
@@ -41,20 +66,6 @@ STORM_LABELS_SHORT = {
 
 # Random seed
 SEED = 325976123
-
-# # Path to this file
-PROJECT_DIR = Path(__file__).parent.parent.parent
-REPLICATION_DIR = PROJECT_DIR / "replication"
-# Set data and figure relative paths
-FIGS_DIR = PROJECT_DIR / "paper_figures"
-DATA_DIR = REPLICATION_DIR / "data"
-DERIVED_DIR = DATA_DIR / "derived"
-FIGURE_DATA_DIR = FIGS_DIR / "figure_data"
-
-# Matplotlib style to use; this is the format for passing matplotlib a filepath
-# rather than a name in your stylelib
-MPL_STYLE = f"file://{PROJECT_DIR / 'replication' / 'cd_bl_slides.mplstyle'}"
-
 
 # Condensate loading and vertical velocity thresholds for what constitutes in-updraft gridpoints
 IN_UPDRAFT_R_CONDENSATE_THRESHOLD = 1e-4  # kg/kg
@@ -103,79 +114,110 @@ STORM_VARIABLES_USED = [
 SIMULATION_START_TIME = pd.Timestamp("1991-04-26 21:00:00")
 SIMULATION_END_TIME = pd.Timestamp("1991-04-27 00:00:00")
 
-# Progressive colormap to use where relevant
-PROGRESSIVE_CMAP = "viridis"
-
-
-########################################################################
-############################## Filepaths ##############################
-########################################################################
-
-# # Paths to 5-minute rams output
-# RAMS_OUTPUT_DIRS = {storm: DATA_DIR.joinpath(storm) for storm in STORM_NAMES}
-
-# Paths to precalculated tracer vertical profile datasets
-# TRACER_TOTALS_PROFILE_FILEPATHS = {
-#     storm: DERIVED_DIR.joinpath(storm).joinpath("tracer_totals_profile_ds.nc")
-#     for storm in STORM_NAMES
-# }
-
-TRACER_TOTALS_PROFILE_FILEPATHS = {
-    "ic_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/isolated_convection_wk/validation/fixed-False/derived/tracer_totals_profile_ds.nc"
-    ),
-    "sl_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/validation/fixed-False/derived/tracer_totals_profile_ds.nc"
-    ),
-}
+# Grid and output settings shared by all three runs (DELTAX and FRQLITE in each
+# run's RAMSIN). The upper-level mass flux integrates over both.
+HORIZONTAL_GRID_SPACING_M = 500
+LITE_OUTPUT_INTERVAL_SECONDS = 2
 
 # Height thresholds for defining upper levels
 # All of the ones we calculated for sensitivity tests
-# ALL_UL_Z_THRESHOlDS = [7, 8, 9, 10]  # km
+# (the lower-case "l" in the name is historical; notebooks use it as spelled)
 ALL_UL_Z_THRESHOlDS = [10]  # km
 
 # The one we actually use
 UL_Z_THRESHOLD = 10  # km
 
-# Same for the upper-level tracer totals
-UL_TRACER_TOTALS_FILEPATHS = {
-    storm: (
-        DERIVED_DIR.joinpath(storm).joinpath(
-            f"ul_tracer_totals_ds_z-{UL_Z_THRESHOLD}.pkl"
-        )
-    )
-    for storm in STORM_NAMES
-}
+# Progressive colormap to use where relevant
+PROGRESSIVE_CMAP = "viridis"
 
-# Path to directory where z=10km fluxes are stored
-# These are four different dicts which each have the storms as keys, so
-# just store them in the top-level derived directory
+########################################################################
+############################## Filepaths ##############################
+########################################################################
+
+# Root of this repository: src/blt_utils/__init__.py is three levels below it
+PROJECT_DIR = Path(__file__).parent.parent.parent
+REPLICATION_DIR = PROJECT_DIR / "replication"
+
+# Where the analysis notebook writes its figures and the data behind them.
+# Deliberately not `paper_figures/`, which holds the figures of the submitted
+# manuscript, made from the original runs
+FIGS_DIR = PROJECT_DIR / "analysis" / "paper_figures"
+FIGURE_DATA_DIR = FIGS_DIR / "figure_data"
+
+# Matplotlib style to use; this is the format for passing matplotlib a filepath
+# rather than a name in your stylelib
+MPL_STYLE = f"file://{REPLICATION_DIR / 'cd_bl_slides.mplstyle'}"
+
+# In-repo tree of derived products for the original manuscript runs. Of the runs
+# analysed here only the supercell is a manuscript run, and its products live in
+# `DERIVED_DIR / "sc_wk"` (see DERIVED_DIRS below)
+DATA_DIR = REPLICATION_DIR / "data"
+DERIVED_DIR = DATA_DIR / "derived"
+
+# The manuscript runs' upper-level mass flux caches, one dict of all three storms
+# per threshold height. Kept for the validation notebooks that compare against the
+# manuscript; the analysis here caches per run in UPPER_LEVEL_DERIVED_DIRS instead
 UL_FLUXES_DIR = DERIVED_DIR
 
-# Paths to storm development dataframes
-DEVELOPMENT_DATAFRAME_FILEPATHS = {
-    "ic_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/isolated_convection_wk/validation/fixed-False/derived/development_dataframe.pkl"
+########################################################################
+############################## Run registry ##############################
+########################################################################
+
+# Root of the RAMS output tree on moonbow. Every run directory hangs off it, so a
+# filesystem move only needs editing here
+RAMS_IO_ROOT = Path("/moonbow/cmdavis4/projects/bl_transport/rams_io")
+
+# The simulation analysed for each storm. All three start from the supercell's
+# initial thermodynamic profile: the isolated convection and the squall line are
+# reruns on that profile, and the supercell is the original manuscript run
+RUN_DIRS = {
+    "ic_wk": (
+        RAMS_IO_ROOT / "ic_wk" / "validation" / "other_forcing_bthp-2.0_radius-2x"
     ),
-    "sl_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/validation/fixed-False/derived/development_dataframe.pkl"
-    ),
-    "sc_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/derived/sc_wk/development_dataframe.pkl"
+    "sl_wk": RAMS_IO_ROOT / "sl_wk" / "validation" / "sc_profile",
+    "sc_wk": (
+        RAMS_IO_ROOT
+        / "supercell_wk"
+        / "all_tracers"
+        / "newtracer_forcing-grant2014_dx-500_frqlite-2_stratwinds"
     ),
 }
 
-# Paths to 5-minute rams output
+# Raw RAMS output: the 5-minute analysis files (a-A-*) and the 2-second lite
+# files (a-L-*) for each storm
 RAMS_OUTPUT_DIRS = {
-    "ic_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/isolated_convection_wk/validation/fixed-False/output"
-    ),
-    "sl_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/validation/fixed-False/output"
-    ),
-    "sc_wk": Path(
-        f"/moonbow/cmdavis4/projects/bl_transport/rams_io/supercell_wk/all_tracers/newtracer_forcing-grant2014_dx-500_frqlite-2_stratwinds/output"
-    ),
+    storm: run_dir / "output" for storm, run_dir in RUN_DIRS.items()
+}
+
+# Where each run's derived products live.
+# The two reruns keep theirs beside the run, in `<run_dir>/derived/`.
+# The supercell is a manuscript run, and the manuscript runs keep theirs in this
+# repo's `replication/data/derived/<storm>/` tree; the run's own `derived/` is
+# absent. Getting this wrong would not raise: the supercell would find no cache
+# and silently recompute every product from raw output, which takes hours
+DERIVED_DIRS = {
+    "ic_wk": RUN_DIRS["ic_wk"] / "derived",
+    "sl_wk": RUN_DIRS["sl_wk"] / "derived",
+    "sc_wk": DERIVED_DIR / "sc_wk",
+}
+
+# In-updraft tracer vertical profiles (Figures 7-9 and the entrainment statistics)
+TRACER_TOTALS_PROFILE_FILEPATHS = {
+    storm: derived_dir / "tracer_totals_profile_ds.nc"
+    for storm, derived_dir in DERIVED_DIRS.items()
+}
+
+# Storm development dataframes (Figures 3-5 and 10)
+DEVELOPMENT_DATAFRAME_FILEPATHS = {
+    storm: derived_dir / "development_dataframe.pkl"
+    for storm, derived_dir in DERIVED_DIRS.items()
+}
+
+# Upper-level tracer totals and mass fluxes (Figures 11-12), one cache file per
+# threshold height
+UPPER_LEVEL_DERIVED_DIRS = {
+    storm: derived_dir / "upper_level"
+    for storm, derived_dir in DERIVED_DIRS.items()
 }
 
 ########################################################################################
@@ -184,8 +226,24 @@ RAMS_OUTPUT_DIRS = {
 
 
 def calculate_thermodynamic_variables(ds):
-    """
-    Function to calculate basic derived thermodynamic/physical variables.
+    """Add the derived thermodynamic and physical variables to a RAMS dataset.
+
+    Mechanism: RAMS writes the Exner function (``PI``, already multiplied by
+    c_p = 1004 J/kg/K), potential temperature, and mixing ratios. Temperature and
+    pressure follow from the Exner function, and the humidity variables follow
+    from pressure and vapour mixing ratio through MetPy. Units are attached with
+    pint only for each MetPy call and stripped again, so every variable stored on
+    the dataset is a plain float array.
+
+    Two variables depend on what the dataset carries:
+
+    * ``air_mass`` needs the base-state density ``DN0``, which parcel output lacks.
+      Each gridpoint's air mass is DN0 times the 500 m x 500 m cell area times the
+      layer depth from ``z.diff``.
+    * ``buoyancy`` needs a horizontal layer mean, so it is skipped for datasets
+      without x and y dimensions.
+
+    The dataset is modified in place and also returned.
     """
     ds["T"] = ds["PI"] * ds["THETA"] / 1004.0
     ds["R_condensate"] = ds["RTP"] - ds["RV"]
@@ -226,8 +284,23 @@ def calculate_thermodynamic_variables(ds):
 
 
 def calculate_derived_variables(storm_ds, storm_name):
-    """
-    Function to calculate derived thermodynamic variables as well as do basic preprocessing on the rams output
+    """Add derived variables, flags, and coordinates to one storm's RAMS output.
+
+    Mechanism: on top of ``calculate_thermodynamic_variables`` this adds
+
+    * the gridpoint classification flags: ``in_updraft`` (cloudy and rising
+      faster than 1 m/s) and ``in_anvil`` (cloudy, nearly still, and above
+      10 km, following McGee and van den Heever 2014);
+    * the per-storm ``in_analysis`` mask from ``ANALYSIS_FLAG_FUNCTIONS``, which
+      for the supercell keeps only the right mover;
+    * kinematic fields (vertical vorticity, horizontal divergence) and
+      base-state-relative winds and potential temperature, the base state being
+      the horizontal mean at the first output time;
+    * a ``t_minutes`` coordinate, counted from the dataset's first time, and a
+      surface rain rate in mm/hr.
+
+    The x and y coordinates are shifted to start at 0, so positions are measured
+    from the domain's corner.
     """
     storm_ds = calculate_thermodynamic_variables(storm_ds)
 
@@ -300,17 +373,29 @@ def calculate_derived_variables(storm_ds, storm_name):
 ######################################################################################
 
 
-# Define if a supercell point is in the right mover
 def sc_wk_right_mover_boundary(x):
+    """The y position (m) of the line separating the supercell's two movers.
+
+    The supercell splits into a right mover and a left mover. This straight line,
+    rising 10 km over every 50 km of x, separates them for the whole simulation.
+    Points on or below it belong to the right mover.
+    """
     return 78000 + x * (10000 / 50000)
 
 
 def sc_wk_in_right_mover(x, y):
+    """Whether the point (x, y) lies in the supercell's right mover."""
     return y <= sc_wk_right_mover_boundary(x)
 
 
-# Basic check on RAMS output data quality that raises an error if it fails
 def check_storm_ds(ds, lite=False):
+    """Raise if a storm's analysis output does not carry the expected tracers.
+
+    Every run carries the fixed-source tracers 7-42 and the rain-sourced tracers
+    1-5. Tracer 6, for 80 mm/hr of rain, exists but is unused. Any other tracer
+    variable means the output came from a differently configured run. Lite output
+    carries no tracers, so it is not checked.
+    """
     if not lite:
         # Only tracer not being used should be 6, which was for 80 mm/hr of rain
         assert [
@@ -322,7 +407,9 @@ def check_storm_ds(ds, lite=False):
         ] == ["TRACERP006"]
 
 
-# Function that returns a flag for whether a gridpoint should be included in analysis
+# Function that returns a flag for whether a gridpoint should be included in analysis.
+# The isolated convection and squall line use every gridpoint; the supercell uses
+# only its right mover
 ANALYSIS_FLAG_FUNCTIONS = {
     "ic_wk": lambda ds: xr.DataArray(
         np.full((len(ds["x"]), len(ds["y"])), True),
@@ -341,14 +428,14 @@ ANALYSIS_FLAG_FUNCTIONS = {
 ################################################################################
 
 
-# Function to label time on the x axis with consistent tick mark values
 def label_x_axis(ax, short=False):
+    """Label a time axis in simulation minutes, with ticks every 30 minutes."""
     ax.xaxis.set_ticks(np.arange(0, 181, 30))
     ax.set_xlabel(f"{'Sim.' if short else 'Simulation'} time (minutes)")
 
 
-# Make figure panel titles with (a), (b), (c), etc
 def axes_title(letter_ix, title):
+    """Prefix a panel title with its letter: index 0 gives "(a) title"."""
     return f"({chr(ord('a') + letter_ix)}) {title}"
 
 
@@ -357,13 +444,13 @@ def axes_title(letter_ix, title):
 ################################################################################
 
 
-# Convert a simulation time (i.e. Timestamp or datetime) to minutes from the simulation start
 def simulation_time_to_minutes(simulation_time):
+    """Convert a simulation time (Timestamp or datetime) to minutes since the start."""
     return (simulation_time - SIMULATION_START_TIME) / pd.Timedelta(minutes=1)
 
 
-# Reverse of the above
 def minutes_to_simulation_time(minutes):
+    """Convert minutes since the start to a simulation time (numpy datetime64)."""
     return (SIMULATION_START_TIME + pd.Timedelta(minutes=minutes)).to_numpy()
 
 
@@ -372,8 +459,24 @@ def minutes_to_simulation_time(minutes):
 #######################################################################################
 
 
-# Postprocess the 5-minute RAMS output
 def postprocess_storm_ds(ds, storm_name, lite=False):
+    """Turn one storm's raw RAMS output into the dataset the analysis reads.
+
+    Mechanism: checks the tracer set, adds the derived variables and flags from
+    ``calculate_derived_variables``, then (for analysis output) builds the
+    tracer quantities:
+
+    * ``total_fs_tracer``, the sum of all fixed-source tracers, and its
+      accumulated surface-emission counterpart ``ACCtotal_fs_tracer``;
+    * a ``<tracer>_nc`` number-concentration version of every tracer variable,
+      the mixing ratio times the gridpoint air mass, so tracer amounts can be
+      summed over gridpoints.
+
+    Set ``lite=True`` for lite output, which carries no tracers. Lite output still
+    needs every variable ``calculate_derived_variables`` reads, so it does not work
+    on lite files that carry only a subset; the upper-level mass flux therefore
+    uses ``read_upper_level_lite_dataset`` instead.
+    """
     # Run basic checks
     check_storm_ds(ds, lite=lite)
     # Calculate derived variables and analysis flag
@@ -394,8 +497,27 @@ def postprocess_storm_ds(ds, storm_name, lite=False):
     return ds
 
 
-# Postprocess the precalculated tracer profile datasets
 def calculate_tracer_profile_ds(storm_ds):
+    """Sum each tracer over the in-updraft gridpoints at every height and time.
+
+    Mechanism: the dataset is masked to in-analysis gridpoints (the supercell's
+    right mover), then looped over output times so each step stays small enough
+    to compute. At each time it produces three sets of horizontal sums:
+
+    * every tracer and its number concentration over in-updraft gridpoints,
+      together with the updraft air mass;
+    * the same over in-updraft gridpoints that are also supersaturated, with an
+      ``ss_`` prefix;
+    * the accumulated surface emission (``ACC*``) as number concentrations.
+
+    The accumulated tracers are surface totals, not 3D fields, so they are
+    converted to numbers with the air mass of the lowest model level above
+    ground (z index 1). That air mass comes from the base-state density DN0, so
+    it does not change in time.
+
+    Returns:
+        A dataset with dimensions (time, z).
+    """
     tracer_totals_list = []
 
     # Make a list of all of the tracer variables
@@ -461,8 +583,26 @@ def calculate_tracer_profile_ds(storm_ds):
     return tracer_totals_profile_ds
 
 
-# Postprocess the dataframe containing the information on each storm's development
 def calculate_development_dataframe(storm_ds):
+    """Build the time series that describe one storm's development.
+
+    Mechanism: over in-analysis gridpoints, at every output time, it computes
+
+    * ``max_updraft``: the strongest updraft at 5 km. Each gridpoint first takes
+      the weakest w in its 4 x 4 neighbourhood, so a single-gridpoint spike cannot
+      set the maximum. The result is then smoothed with a 3-output (15 minute)
+      running mean.
+    * ``storm_centroid_x`` and ``storm_centroid_y``: the mean position of the 5 km
+      gridpoints whose w is at least 20% of the run's peak max_updraft.
+    * ``updraft_mass`` and ``anvil_mass``: the air mass of the in-updraft and
+      in-anvil gridpoints.
+    * ``total_rain`` and ``rain_thresholdN``: the domain-summed surface rain rate,
+      and the number of gridpoints raining at least each rain-sourced tracer's
+      emission threshold.
+
+    Returns:
+        A DataFrame with one row per output time.
+    """
     # Filter to in-analysis
     storm_ds = storm_ds.where(storm_ds["in_analysis"])
 
@@ -528,7 +668,418 @@ def calculate_development_dataframe(storm_ds):
     return development_df
 
 
+#######################################################################################
+############################## Cached derived products ##############################
+#######################################################################################
+
+
+def analysis_output_time_count(storm):
+    """How many 5-minute output times a storm's run has on disk.
+
+    Mechanism: RAMS writes one ``a-A-<timestamp>-g1.h5`` file per analysis time,
+    so the file count is the time count. Counting files rather than opening the
+    dataset makes this cheap enough to guard every cached product against
+    staleness, including products read without loading the raw run.
+
+    Returns:
+        The number of analysis output times, or None if the output directory is
+        absent.
+    """
+    output_dir = RAMS_OUTPUT_DIRS[storm]
+    if not output_dir.is_dir():
+        return None
+    return len(list(output_dir.glob("a-A-*-g1.h5")))
+
+
+def _time_count_of_result(result):
+    """Number of output times in a cached result: rows of a DataFrame, else `time`."""
+    if isinstance(result, pd.DataFrame):
+        return len(result)
+    return result.sizes["time"]
+
+
+def read_or_cache_pickle(
+    cache_path, compute_result, *args, expected_time_count=None, **kwargs
+):
+    """Read a pickled result if it is cached and current, else compute and cache it.
+
+    Why this rather than ``cm.utils.read_or_cache_to``: that decorator cannot write
+    ``.pkl`` files. ``cm.utils.write_file`` dispatches ``.pkl`` to a ``to_pkl``
+    method that neither DataFrames nor Datasets have, and ``read_or_cache_to``
+    swallows the resulting error. The cache therefore never populates, and every
+    run recomputes while printing that it wrote the file. Writing with
+    ``pd.to_pickle`` works for any picklable result.
+
+    Staleness: a cache is keyed only by its path. A cache written while a run was
+    still integrating therefore keeps being read after the run finishes with more
+    output times, and every consumer then divides a short series by a long one.
+    Passing *expected_time_count* makes that self-correcting. A cached result whose
+    time count (rows of a DataFrame, length of ``time`` for a Dataset) disagrees is
+    discarded and recomputed. A freshly computed result that disagrees raises
+    rather than being cached.
+
+    Args:
+        cache_path: Where to read and write the pickle.
+        compute_result: Callable that produces the result when the cache is cold.
+        *args, **kwargs: Passed through to *compute_result*.
+        expected_time_count: Number of output times the result must cover,
+            normally ``analysis_output_time_count(storm)``. None skips the check.
+
+    Returns:
+        The cached or freshly computed result.
+    """
+    cache_path = Path(cache_path)
+
+    # Use the cache only when it exists AND covers the expected number of times
+    if cache_path.exists():
+        cached_result = pd.read_pickle(cache_path)
+        cache_is_stale = (
+            expected_time_count is not None
+            and _time_count_of_result(cached_result) != expected_time_count
+        )
+        if not cache_is_stale:
+            print(f"Read cached result from {cache_path}")
+            return cached_result
+        # Say why it recomputes, because a silent recompute of an expensive
+        # reduction looks like a broken cache
+        print(
+            f"Stale cache at {cache_path}: it holds"
+            f" {_time_count_of_result(cached_result)} times but the run has"
+            f" {expected_time_count}. Recomputing and overwriting it."
+        )
+    else:
+        print(f"No cache at {cache_path}, computing...")
+
+    result = compute_result(*args, **kwargs)
+
+    # Refuse to cache a result that already fails the caller's expectation, so a bad
+    # computation cannot poison later runs the way a stale file would
+    if (
+        expected_time_count is not None
+        and _time_count_of_result(result) != expected_time_count
+    ):
+        raise ValueError(
+            f"{compute_result.__name__} returned"
+            f" {_time_count_of_result(result)} times but {expected_time_count}"
+            f" were expected for {cache_path}. Not caching it."
+        )
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.to_pickle(result, cache_path)
+    print(f"Wrote result to {cache_path}")
+    return result
+
+
+def read_or_compute_tracer_totals_datasets(storm_dss):
+    """Load each storm's in-updraft tracer profiles, computing any that are missing.
+
+    Mechanism: the profiles come from ``calculate_tracer_profile_ds``, which
+    collapses every tracer from (time, z, y, x) to (time, z). That touches the
+    whole dataset, so the result is cached as netCDF at
+    ``TRACER_TOTALS_PROFILE_FILEPATHS[storm]``. A cached file is used only when
+    its number of times matches the run's output files on disk. Otherwise it was
+    written while the run was still integrating, and it is recomputed and
+    overwritten.
+
+    A computed file is written out and then reopened from disk, rather than kept
+    in memory. The first run and every later run then take the same code path, so
+    any problem with the round trip through disk shows up on the run that created
+    the file.
+
+    Args:
+        storm_dss: Mapping of storm name -> postprocessed 5-minute dataset. Used
+            only for storms whose cache is missing or stale.
+
+    Returns:
+        (tracer_totals_profile_dss, tracer_totals_dss): the vertical profiles,
+        and their sums over height excluding the below-ground level at z index 0.
+        Both are keyed by storm name.
+    """
+    tracer_totals_profile_dss = {}
+    for storm in STORM_NAMES:
+        profile_filepath = TRACER_TOTALS_PROFILE_FILEPATHS[storm]
+
+        if profile_filepath.exists():
+            # Check the cache's time count against the output files on disk
+            cached_profile_ds = xr.open_dataset(profile_filepath)
+            expected_time_count = analysis_output_time_count(storm)
+            cache_is_stale = (
+                expected_time_count is not None
+                and cached_profile_ds.sizes.get("time") != expected_time_count
+            )
+            if not cache_is_stale:
+                print(f"Read tracer profile dataset from {profile_filepath}")
+                tracer_totals_profile_dss[storm] = cached_profile_ds
+                continue
+            cached_profile_ds.close()
+            print(
+                f"Stale tracer profile cache at {profile_filepath}: it holds"
+                f" {cached_profile_ds.sizes.get('time')} times but the run has"
+                f" {expected_time_count}. Recomputing and overwriting it."
+            )
+
+        # Compute it, write it, and reopen it from disk (see docstring)
+        print(f"Computing the tracer profile dataset for {storm}...")
+        tracer_totals_profile_ds = calculate_tracer_profile_ds(storm_dss[storm])
+        profile_filepath.parent.mkdir(parents=True, exist_ok=True)
+        tracer_totals_profile_ds.to_netcdf(profile_filepath)
+        print(f"Wrote tracer profile dataset to {profile_filepath}")
+        tracer_totals_profile_dss[storm] = xr.open_dataset(profile_filepath)
+
+    # Sum over the vertical, skipping the model's below-ground level at index 0
+    tracer_totals_dss = {
+        storm: profile_ds.isel({"z": slice(1, len(profile_ds["z"]))}).sum("z")
+        for storm, profile_ds in tracer_totals_profile_dss.items()
+    }
+    return tracer_totals_profile_dss, tracer_totals_dss
+
+
+def read_or_compute_development_dataframes(storm_dss):
+    """Load each storm's development dataframe, computing any that are missing.
+
+    Mechanism: the dataframe comes from ``calculate_development_dataframe`` over
+    in-analysis gridpoints, which for the supercell means the right mover. It is
+    cached at ``DEVELOPMENT_DATAFRAME_FILEPATHS[storm]`` and trusted only when it
+    has one row per output time on disk; a cache with a different row count
+    predates the run finishing and is recomputed.
+
+    Each storm's centroid track is also attached to its dataset as
+    ``storm_position_x`` and ``storm_position_y``, because the storm development
+    figures centre their panels on it. This modifies ``storm_dss`` in place.
+
+    Args:
+        storm_dss: Mapping of storm name -> postprocessed 5-minute dataset.
+
+    Returns:
+        Mapping of storm name -> development DataFrame.
+    """
+    development_dfs = {}
+    for storm in STORM_NAMES:
+        this_storm_ds = storm_dss[storm]
+        development_dfs[storm] = read_or_cache_pickle(
+            DEVELOPMENT_DATAFRAME_FILEPATHS[storm],
+            calculate_development_dataframe,
+            this_storm_ds.where(this_storm_ds["in_analysis"]),
+            expected_time_count=analysis_output_time_count(storm),
+        )
+
+        # Attach the storm centroid positions to the storm dataset
+        for coordinate in ["x", "y"]:
+            storm_dss[storm][f"storm_position_{coordinate}"] = xr.DataArray(
+                development_dfs[storm][f"storm_centroid_{coordinate}"].values,
+                coords={
+                    "time": [
+                        minutes_to_simulation_time(minutes)
+                        for minutes in development_dfs[storm]["t_minutes"].values
+                    ]
+                },
+            )
+
+    return development_dfs
+
+
+#######################################################################################
+############################## Upper-level transport ##############################
+#######################################################################################
+
+
+def calculate_upper_level_tracer_dataframe(storm_ds, upper_level_z_threshold_m):
+    """Total tracer content above a height, as a time series.
+
+    Mechanism: everything at or above the threshold height is summed over all
+    three spatial dimensions. The ``in_analysis`` mask is deliberately not applied,
+    so the supercell's total includes both its right and left movers, as the
+    manuscript describes.
+
+    The accumulated (``ACC*``) tracers are surface emission totals rather than 3D
+    fields. They are therefore converted to number concentrations with the air
+    mass of the lowest level above ground (z index 1) at the first time, not with
+    the local air mass. Only the rain-sourced tracers get these.
+
+    Returns:
+        A DataFrame with one row per output time.
+    """
+    upper_level_ds = storm_ds.sel(
+        {"z": slice(upper_level_z_threshold_m, None, None)}
+    ).copy()
+
+    # Number-concentration versions of every current tracer
+    all_current_tracer_vars = FS_TRACERS + RS_TRACERS + ["total_fs_tracer"]
+    for tracer in all_current_tracer_vars:
+        upper_level_ds[tracer + "_nc"] = (
+            upper_level_ds[tracer] * upper_level_ds["air_mass"]
+        )
+
+    # Accumulated emission totals, for the rain-sourced tracers only
+    for tracer in RS_TRACERS:
+        upper_level_ds["ACC" + tracer + "_nc"] = (
+            upper_level_ds["ACC" + tracer]
+            * upper_level_ds.isel({"z": 1, "time": 0})["air_mass"]
+        )
+
+    return (
+        upper_level_ds[
+            [x for x in upper_level_ds.data_vars if "tracer" in x.lower()]
+            + ["air_mass"]
+        ]
+        .sum(["x", "y", "z"])
+        .to_dataframe()
+        .reset_index()
+    )
+
+
+def read_upper_level_lite_dataset(storm, upper_level_z_threshold_m):
+    """Read one model level of a storm's 2-second lite output, with air density.
+
+    Mechanism: lite files exist for every 2 seconds from the simulation start to
+    its end, so the file list is built from those times. A missing file raises
+    rather than leaving a gap in the time integral. Each file is cut down to the
+    single level nearest the threshold height as it is read.
+
+    Air density is computed from pressure, temperature and vapour mixing ratio,
+    because lite files carry no base-state density DN0. The formulas match
+    ``calculate_thermodynamic_variables`` exactly. They are applied here directly
+    rather than through ``postprocess_storm_ds``, because that also derives
+    condensate, vorticity and rain rate. Those need variables that a lite file
+    can omit: the squall line's lite files carry only WC, THETA, PI and RV.
+
+    Returns:
+        A dataset with WC and air_density on (time, y, x), chunked so each chunk is
+        one whole horizontal level at one time.
+    """
+    # Every 2-second lite output time, formatted the way RAMS names its files
+    lite_output_datetime_strings = (
+        pd.date_range(
+            start=SIMULATION_START_TIME,
+            end=SIMULATION_END_TIME,
+            freq=f"{LITE_OUTPUT_INTERVAL_SECONDS}s",
+        )
+        .strftime(cm.rams.RAMS_DT_STRFTIME_STR)
+        .values
+    )
+    lite_filepaths = [
+        RAMS_OUTPUT_DIRS[storm] / f"a-L-{datetime_string}-g1.h5"
+        for datetime_string in lite_output_datetime_strings
+    ]
+    missing_lite_filepaths = [path for path in lite_filepaths if not path.exists()]
+    if missing_lite_filepaths:
+        raise FileNotFoundError(
+            f"{len(missing_lite_filepaths)} of {len(lite_filepaths)} lite files"
+            f" are missing for {storm}, starting with {missing_lite_filepaths[0]}"
+        )
+
+    # Read only the level nearest the threshold height from each file
+    lite_ds = cm.rams.read_rams_output(
+        input_filenames=lite_filepaths,
+        time_dim_name="time",
+        units=False,
+        preprocess=lambda ds: ds.sel(
+            {"z": upper_level_z_threshold_m}, method="nearest", drop=False
+        ),
+    )
+
+    # Temperature and pressure from the Exner function, as in
+    # calculate_thermodynamic_variables
+    temperature_k = lite_ds["PI"] * lite_ds["THETA"] / 1004.0
+    pressure_hpa = 1000.0 * ((lite_ds["PI"] / 1004.0) ** (1004.0 / 287.0))
+    vapor_pressure = mpc.vapor_pressure(
+        pressure_hpa * units("hPa"), lite_ds["RV"] * units("kg/kg")
+    )
+
+    # Moist air density, via the mixing ratio implied by the vapour pressure
+    mixing_ratio = mpc.mixing_ratio(
+        partial_press=vapor_pressure.pint.to("hPa"),
+        total_press=pressure_hpa * units("hPa"),
+    ).pint.dequantify()
+    lite_ds["air_density"] = (
+        mpc.density(
+            pressure=pressure_hpa * units("hPa"),
+            temperature=temperature_k * units("K"),
+            mixing_ratio=mixing_ratio,
+        )
+        .pint.to("kg/m^3")
+        .pint.dequantify()
+    )
+
+    # Rechunk to full horizontal layer per chunk
+    return (
+        lite_ds[["WC", "air_density"]]
+        .chunk({"x": len(lite_ds["x"].values), "y": len(lite_ds["y"].values)})
+        .unify_chunks()
+    )
+
+
+def calculate_cumulative_mass_flux(lite_level_ds, output_times):
+    """Cumulative upward and downward air mass through a level, from lite output.
+
+    Mechanism: at each 2-second lite output time, the mass through each gridpoint
+    of the level is ``w * rho * dx^2 * dt``, with dt the 2-second lite interval.
+    Gridpoints with w > 0 make up the upward flux. The downward flux is the total
+    minus the upward part, so it is negative. Both are summed over the level and
+    accumulated in time, then sampled at the 5-minute analysis times so they line
+    up with the other upper-level quantities.
+
+    The whole domain is used, without the ``in_analysis`` mask, so the supercell's
+    flux includes both movers, matching the upper-level tracer totals.
+
+    Args:
+        lite_level_ds: The output of ``read_upper_level_lite_dataset``.
+        output_times: The 5-minute analysis times to sample the running totals at.
+
+    Returns:
+        A Dataset with ``cumu_upward_mass_flux`` and ``cumu_downward_mass_flux``
+        in kg, on the analysis times, with a ``t_minutes`` coordinate.
+    """
+    # Mass through each gridpoint over one lite interval:
+    #   m/s * kg/m^3 * m^2 * s = kg
+    per_gridpoint_mass_flux = (
+        lite_level_ds["WC"]
+        * lite_level_ds["air_density"]
+        * HORIZONTAL_GRID_SPACING_M**2
+        * LITE_OUTPUT_INTERVAL_SECONDS
+    )
+
+    # Split the level-summed flux by the sign of w
+    is_upward = lite_level_ds["WC"] > 0
+    upward_flux = per_gridpoint_mass_flux.where(is_upward).sum(["x", "y"])
+    total_flux = per_gridpoint_mass_flux.sum(["x", "y"])
+    downward_flux = total_flux - upward_flux
+
+    # Accumulate in time, then sample at the analysis output times
+    cumulative_upward = upward_flux.cumsum("time").sel({"time": output_times})
+    cumulative_downward = downward_flux.cumsum("time").sel({"time": output_times})
+    cumulative_upward.name = "cumu_upward_mass_flux"
+    cumulative_downward.name = "cumu_downward_mass_flux"
+    cumulative_flux_ds = xr.merge([cumulative_upward, cumulative_downward])
+
+    # Minutes since the first analysis time, as calculate_derived_variables adds
+    return cumulative_flux_ds.assign_coords(
+        t_minutes=(
+            cumulative_flux_ds["time"] - cumulative_flux_ds["time"].values[0]
+        ).dt.total_seconds()
+        // 60
+    )
+
+
+def calculate_upper_level_mass_flux(storm, upper_level_z_threshold_m, output_times):
+    """Read a storm's lite output and integrate its upper-level mass flux.
+
+    This chains ``read_upper_level_lite_dataset`` and
+    ``calculate_cumulative_mass_flux`` and computes the result, so it can be
+    handed to ``read_or_cache_pickle`` as one callable. Expect it to take tens of
+    minutes per storm, because it opens all 5401 lite files.
+    """
+    lite_level_ds = read_upper_level_lite_dataset(storm, upper_level_z_threshold_m)
+    return calculate_cumulative_mass_flux(lite_level_ds, output_times).compute()
+
+
+################################################################################
+############################## Figure data ##############################
+################################################################################
+
+
 def save_storm_data(ds, name, verbose=True):
+    """Save the storm variables a figure uses to ``FIGURE_DATA_DIR/<name>.nc``."""
     if verbose:
         print(f"Saving storm data {name}...")
     ds[STORM_VARIABLES_USED].compute().to_netcdf(
@@ -537,6 +1088,7 @@ def save_storm_data(ds, name, verbose=True):
 
 
 def save_figure_data(figure_data, data_name):
+    """Pickle a figure's plotted data to ``FIGURE_DATA_DIR/<data_name>.pkl``."""
     with Path(FIGURE_DATA_DIR.joinpath(data_name).with_suffix(".pkl")).open(
         "wb"
     ) as f:
@@ -544,6 +1096,7 @@ def save_figure_data(figure_data, data_name):
 
 
 def read_figure_data(figure_name):
+    """Read back the data that ``save_figure_data`` saved for a figure."""
     with Path(FIGURE_DATA_DIR.joinpath(figure_name).with_suffix(".pkl")).open(
         "rb"
     ) as f:
@@ -554,6 +1107,13 @@ def read_figure_data(figure_name):
 def plot_and_save(
     figure_data, figure_name, fn, *args, convert_xarray_to_numpy=True, **kwargs
 ):
+    """Call a plotting function and record its positional arguments.
+
+    Mechanism: the arguments are stored in ``figure_data[figure_name]`` before
+    ``fn(*args, **kwargs)`` is called, so the data behind every plotted element
+    can be saved alongside the figure. xarray arguments are converted to numpy
+    arrays first, so the saved data does not depend on xarray.
+    """
     # First save the data
     # Convert anything in xarray to numpy
     if convert_xarray_to_numpy:
