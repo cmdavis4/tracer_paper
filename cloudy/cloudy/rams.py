@@ -1643,7 +1643,6 @@ def wk84_sounding(
         ),
     )
 
-    # Apply well-mixed boundary layer modification (Seigel & van den Heever 2014)
     # Constant potential temperature below 900 hPa
     p_idx_900hpa = np.argmin(np.abs(wk_ps - 900 * units("hPa")))
     wk_theta[:p_idx_900hpa] = wk_theta[p_idx_900hpa]

@@ -27,7 +27,7 @@ import cloudy as cm
 ########################################################################
 
 # Mapping from storm short name to human-readable name
-STORM_NAMES = ["ic_wk", "sl_wk", "sc_wk"]
+STORM_NAMES = ["ic_wk"]
 STORM_LABELS = {
     "ic_wk": "Isolated convection",
     "sl_wk": "Squall line",
@@ -53,7 +53,7 @@ FIGURE_DATA_DIR = FIGS_DIR / "figure_data"
 
 # Matplotlib style to use; this is the format for passing matplotlib a filepath
 # rather than a name in your stylelib
-MPL_STYLE = f"file://{PROJECT_DIR / "replication" / 'cd_bl_slides.mplstyle'}"
+MPL_STYLE = f"file://{PROJECT_DIR / 'replication' / 'cd_bl_slides.mplstyle'}"
 
 
 # Condensate loading and vertical velocity thresholds for what constitutes in-updraft gridpoints
@@ -115,9 +115,18 @@ PROGRESSIVE_CMAP = "viridis"
 # RAMS_OUTPUT_DIRS = {storm: DATA_DIR.joinpath(storm) for storm in STORM_NAMES}
 
 # Paths to precalculated tracer vertical profile datasets
+# TRACER_TOTALS_PROFILE_FILEPATHS = {
+#     storm: DERIVED_DIR.joinpath(storm).joinpath("tracer_totals_profile_ds.nc")
+#     for storm in STORM_NAMES
+# }
+
 TRACER_TOTALS_PROFILE_FILEPATHS = {
-    storm: DERIVED_DIR.joinpath(storm).joinpath("tracer_totals_profile_ds.nc")
-    for storm in STORM_NAMES
+    "ic_wk": Path(
+        "/moonbow/cmdavis4/projects/bl_transport/rams_io/isolated_convection_wk/validation/fixed-False/derived/tracer_totals_profile_ds.nc"
+    ),
+    "sl_wk": Path(
+        "/moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/validation/fixed-False/derived/tracer_totals_profile_ds.nc"
+    ),
 }
 
 # Height thresholds for defining upper levels
@@ -145,17 +154,24 @@ UL_FLUXES_DIR = DERIVED_DIR
 
 # Paths to storm development dataframes
 DEVELOPMENT_DATAFRAME_FILEPATHS = {
-    storm: DERIVED_DIR.joinpath(storm).joinpath("development_dataframe.pkl")
-    for storm in STORM_NAMES
+    "ic_wk": Path(
+        "/moonbow/cmdavis4/projects/bl_transport/rams_io/isolated_convection_wk/validation/fixed-False/derived/development_dataframe.pkl"
+    ),
+    "sl_wk": Path(
+        "/moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/validation/fixed-False/derived/development_dataframe.pkl"
+    ),
+    "sc_wk": Path(
+        "/moonbow/cmdavis4/projects/bl_transport/rams_io/derived/sc_wk/development_dataframe.pkl"
+    ),
 }
 
 # Paths to 5-minute rams output
 RAMS_OUTPUT_DIRS = {
     "ic_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/isolated_convection_wk/all_tracers/newtracer_forcing-warmbubble4_deltax-500_frqlite-2_nobulku/output"
+        "/moonbow/cmdavis4/projects/bl_transport/rams_io/isolated_convection_wk/validation/fixed-False/output"
     ),
     "sl_wk": Path(
-        "/moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/all_tracers/newtracer_blspinup-no_forcing-infinitecoldbubble4_deltax-500_frqlite-2/output"
+        "/moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/validation/fixed-False/output"
     ),
     "sc_wk": Path(
         f"/moonbow/cmdavis4/projects/bl_transport/rams_io/supercell_wk/all_tracers/newtracer_forcing-grant2014_dx-500_frqlite-2_stratwinds/output"
@@ -224,19 +240,34 @@ def calculate_derived_variables(storm_ds, storm_name):
         storm_ds["R_condensate"] >= IN_UPDRAFT_R_CONDENSATE_THRESHOLD
     ) & (storm_ds["WC"] >= IN_UPDRAFT_W_THRESHOLD)
 
+    # Add an in-anvil flag, following McGee and van den Heever (2014): cloudy, close
+    # to neutrally buoyant (so NOT in an active updraft or downdraft), and aloft.
+    # calculate_development_dataframe consumes this to build anvil_mass; the flag's
+    # definition was missing from this trimmed copy of blt_utils, which made that
+    # function raise KeyError on any freshly-read dataset.
+    storm_ds["in_anvil"] = (
+        (storm_ds["R_condensate"] >= ANVIL_R_CONDENSATE_THRESHOLD)
+        & (abs(storm_ds["WC"]) < ANVIL_W_THRESHOLD)
+        & (storm_ds["z"] >= ANVIL_Z_THRESHOLD)
+    )
+
     if storm_name == "sc_wk":
-        storm_ds["in_right_mover"] = sc_wk_in_right_mover(storm_ds["x"], storm_ds["y"])
+        storm_ds["in_right_mover"] = sc_wk_in_right_mover(
+            storm_ds["x"], storm_ds["y"]
+        )
 
     # Add a time in minutes coordinate
     storm_ds = storm_ds.assign_coords(
-        t_minutes=(storm_ds["time"] - storm_ds["time"].values[0]).dt.total_seconds()
+        t_minutes=(
+            storm_ds["time"] - storm_ds["time"].values[0]
+        ).dt.total_seconds()
         // 60
     )
 
     # Calculate vertical vorticity
-    storm_ds["vertical_vorticity"] = storm_ds["VC"].differentiate("x") - storm_ds[
-        "UC"
-    ].differentiate("y")
+    storm_ds["vertical_vorticity"] = storm_ds["VC"].differentiate(
+        "x"
+    ) - storm_ds["UC"].differentiate("y")
 
     # Calculate horizontal divergence
     storm_ds["divergence"] = storm_ds["UC"].differentiate("x") + storm_ds[
@@ -245,9 +276,9 @@ def calculate_derived_variables(storm_ds, storm_name):
 
     # Add base state-relative versions of some variables
     for var in ["UC", "VC", "THETA"]:
-        storm_ds[var + "_bsr"] = storm_ds[var] - storm_ds.isel({"time": 0})[var].mean(
-            ["x", "y"]
-        )
+        storm_ds[var + "_bsr"] = storm_ds[var] - storm_ds.isel({"time": 0})[
+            var
+        ].mean(["x", "y"])
     # Add theta deficit
     storm_ds["theta_deficit"] = -storm_ds["THETA_bsr"]
 
@@ -285,17 +316,21 @@ def check_storm_ds(ds, lite=False):
         assert [
             x
             for x in ds.data_vars
-            if x.startswith("TRACERP") and x not in RS_TRACERS and x not in FS_TRACERS
+            if x.startswith("TRACERP")
+            and x not in RS_TRACERS
+            and x not in FS_TRACERS
         ] == ["TRACERP006"]
 
 
 # Function that returns a flag for whether a gridpoint should be included in analysis
 ANALYSIS_FLAG_FUNCTIONS = {
     "ic_wk": lambda ds: xr.DataArray(
-        np.full((len(ds["x"]), len(ds["y"])), True), coords={"x": ds["x"], "y": ds["y"]}
+        np.full((len(ds["x"]), len(ds["y"])), True),
+        coords={"x": ds["x"], "y": ds["y"]},
     ),
     "sl_wk": lambda ds: xr.DataArray(
-        np.full((len(ds["x"]), len(ds["y"])), True), coords={"x": ds["x"], "y": ds["y"]}
+        np.full((len(ds["x"]), len(ds["y"])), True),
+        coords={"x": ds["x"], "y": ds["y"]},
     ),
     "sc_wk": lambda ds: ds["in_right_mover"],
 }
@@ -349,7 +384,9 @@ def postprocess_storm_ds(ds, storm_name, lite=False):
         ds["ACCtotal_fs_tracer"] = 0
         for tracer_var in FS_TRACERS:
             ds["total_fs_tracer"] = ds["total_fs_tracer"] + ds[tracer_var]
-            ds["ACCtotal_fs_tracer"] = ds["ACCtotal_fs_tracer"] + ds["ACC" + tracer_var]
+            ds["ACCtotal_fs_tracer"] = (
+                ds["ACCtotal_fs_tracer"] + ds["ACC" + tracer_var]
+            )
         # Make number concentration versions of all of the tracer variables
         for var in ds.data_vars:
             if "tracer" in var.lower():
@@ -410,7 +447,8 @@ def calculate_tracer_profile_ds(storm_ds):
         # we can just pull out the current value of the air mass (which also won't change in time) for converting
         # the accumulated mixing ratio into a number
         acc_nc = (
-            this_time_ds[all_acc_tracer_vars] * this_time_ds.isel({"z": 1})["air_mass"]
+            this_time_ds[all_acc_tracer_vars]
+            * this_time_ds.isel({"z": 1})["air_mass"]
         ).sum(["x", "y"])
         acc_nc = acc_nc.rename({k: k + "_nc" for k in acc_nc.data_vars})
         tracer_totals_list.append(acc_nc.compute())
@@ -430,10 +468,16 @@ def calculate_development_dataframe(storm_ds):
 
     max_updrafts = (
         storm_ds.sel({"z": 5000}, method="nearest")["WC"]
-        .rolling({"x": 4, "y": 4})
+        .rolling(x=4, y=4)
         .min()
         .max(["x", "y"])
-        .rolling({"time": 3})
+        # The analysis output is read one timestep per file, so `time` arrives as
+        # one dask chunk per timestep. A rolling window cannot span chunks, so
+        # rolling(time=3) over that raises "Moving window (=3) must between 1 and 2".
+        # Collapse time into a single chunk first; this array is 1-D by now (one
+        # value per output time), so it costs nothing.
+        .chunk({"time": -1})
+        .rolling(time=3)
         .mean()
     ).compute()
 
@@ -457,7 +501,9 @@ def calculate_development_dataframe(storm_ds):
     )
 
     anvil_mass = (
-        storm_ds.where(storm_ds["in_anvil"])["air_mass"].sum(["x", "y", "z"]).compute()
+        storm_ds.where(storm_ds["in_anvil"])["air_mass"]
+        .sum(["x", "y", "z"])
+        .compute()
     )
 
     total_rain = storm_ds["PCPRR"].sum(["x", "y"]).compute()
@@ -491,7 +537,9 @@ def save_storm_data(ds, name, verbose=True):
 
 
 def save_figure_data(figure_data, data_name):
-    with Path(FIGURE_DATA_DIR.joinpath(data_name).with_suffix(".pkl")).open("wb") as f:
+    with Path(FIGURE_DATA_DIR.joinpath(data_name).with_suffix(".pkl")).open(
+        "wb"
+    ) as f:
         pkl.dump(figure_data, f)
 
 

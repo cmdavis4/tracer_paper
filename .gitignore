@@ -41,3 +41,9 @@ presentation_figures
 paper_figures
 
 archive
+
+# Harmonization comparison figures (large, regenerable)
+validation/harmonization_output/
+
+# Per-user Claude Code settings
+.claude/settings.local.json

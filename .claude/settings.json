@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Read(//home/cmdavis4/projects/cloudy/cloudy/**)",
+      "Read(//home/cmdavis4/projects/cloudy/cloudy/plotting/**)",
+      "Read(//home/cmdavis4/projects/carlee/xarrams/**)",
+      "Bash(sed -n '210,230p' /home/cmdavis4/projects/tracer_paper/replication/RAMS_tracer_source/src/init/rhhi.f90)",
+      "Bash(sed -n '60,95p' /home/cmdavis4/projects/tracer_paper/replication/RAMS_tracer_source/src/init/rhhi.f90)",
+      "Read(//home/cmdavis4/projects/dc_entrainment/cm1_base/src/**)",
+      "Read(//moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/validation/fixed-True/**)",
+      "Read(//home/cmdavis4/projects/**)",
+      "Read(//home/cmdavis4/projects/carlee/**)",
+      "Bash(pixi run *)",
+      "Read(//home/cmdavis4/.claude/skills/compare-sim-runs/references/**)",
+      "Read(//moonbow/cmdavis4/projects/bl_transport/rams_io/squall_line_wk/validation/**)",
+      "Bash(echo \"=== exit code: $? \\(0=identical, 1=differ\\) ===\")"
+    ],
+    "additionalDirectories": [
+      "/home/cmdavis4/projects/carlee/xarrams/xarrams"
+    ]
+  }
+}
