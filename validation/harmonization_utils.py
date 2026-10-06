@@ -72,13 +72,12 @@ import metpy.calc as mpc
 from metpy.plots import SkewT
 from metpy.units import units
 
-# The two in-repo packages live in sibling directories rather than being
-# installed, so put them on the path here rather than requiring every notebook to
-# do it before its first import of this module.
+# The in-repo `cloudy` and `blt_utils` packages are installed (editable) into the
+# pixi environment by pixi.toml. The path entry below is kept only so this module
+# still imports `cloudy` from an environment that lacks that install.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 for _in_repo_package_dir in [
     _PROJECT_ROOT / "cloudy",
-    _PROJECT_ROOT / "replication",
 ]:
     if str(_in_repo_package_dir) not in sys.path:
         sys.path.append(str(_in_repo_package_dir))
@@ -86,7 +85,7 @@ for _in_repo_package_dir in [
 # User packages
 import xarrams as xrr
 import cloudy as cm
-import blt_utils_limited as blt
+import blt_utils as blt
 
 ########################################################################
 ############################## Run registry ##############################

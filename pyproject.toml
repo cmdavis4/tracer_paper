@@ -1,0 +1,26 @@
+# Packaging for the in-repo analysis utilities, so they install into the pixi
+# environment (see `pypi-dependencies` in pixi.toml) instead of being put on
+# sys.path by hand.
+#
+# Hatchling is used because its editable install is a plain `.pth` entry pointing
+# at `src/`. Editors' static analysers (Pylance) read that from the interpreter's
+# sys.path, so tooltips and go-to-definition work in notebooks. Setuptools'
+# editable installs use an import hook instead, which those analysers cannot see.
+#
+# The runtime dependencies (numpy, xarray, metpy, cloudy, ...) are deliberately
+# not listed: the pixi environment provides all of them, several from local
+# editable checkouts that a PyPI resolution would otherwise try to replace.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tracer-paper"
+version = "0.1.0"
+description = "Analysis utilities for the boundary-layer tracer transport paper"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blt_utils"]

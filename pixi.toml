@@ -47,3 +47,7 @@ carlee_tools = { path = "../carlee/carlee-tools", editable = true}
 xarrams = { path = "../carlee/xarrams", editable = true}
 skyvista = { path = "../carlee/skyvista", editable = true}
 juliacall = "*"
+# The in-repo copy of cloudy, and this repo's own analysis utilities (`blt_utils`,
+# packaged by the root pyproject.toml)
+cloudy = { path = "cloudy", editable = true }
+tracer-paper = { path = ".", editable = true }
