@@ -201,15 +201,25 @@ DERIVED_DIRS = {
     "sc_wk": DERIVED_DIR / "sc_wk",
 }
 
+# Suffix on the cache files of the two products that use the air mass below about
+# 3 km: the tracer profiles and the development dataframes.
+# Caches written before the air mass used the RAMS T-cell thickness (see
+# read_t_level_cell_thicknesses) have no suffix. Their air masses are up to 4.9% too
+# small below about 3 km. The time-count staleness check cannot detect that, so the
+# new file names keep those caches from ever being read again.
+# The upper-level caches need no suffix: every level above 7 km is 250 m deep, where
+# the old and new air masses agree
+AIR_MASS_CACHE_SUFFIX = "_cellthickness"
+
 # In-updraft tracer vertical profiles (Figures 7-9 and the entrainment statistics)
 TRACER_TOTALS_PROFILE_FILEPATHS = {
-    storm: derived_dir / "tracer_totals_profile_ds.nc"
+    storm: derived_dir / f"tracer_totals_profile_ds{AIR_MASS_CACHE_SUFFIX}.nc"
     for storm, derived_dir in DERIVED_DIRS.items()
 }
 
 # Storm development dataframes (Figures 3-5 and 10)
 DEVELOPMENT_DATAFRAME_FILEPATHS = {
-    storm: derived_dir / "development_dataframe.pkl"
+    storm: derived_dir / f"development_dataframe{AIR_MASS_CACHE_SUFFIX}.pkl"
     for storm, derived_dir in DERIVED_DIRS.items()
 }
 
@@ -225,7 +235,80 @@ UPPER_LEVEL_DERIVED_DIRS = {
 ########################################################################################
 
 
-def calculate_thermodynamic_variables(ds):
+def read_rams_header_field(header_filepath, field_name):
+    """Read one numeric field from a RAMS ``*-head.txt`` header file.
+
+    Mechanism: the header lists each field on consecutive lines: its name (such
+    as ``__zmn01``), then the number of values, then one value per line. The file
+    is scanned for the name line, and the values that follow it are parsed.
+
+    Raises:
+        KeyError: if the header has no field of that name.
+
+    Returns:
+        The field's values as a 1-D float array.
+    """
+    with Path(header_filepath).open("r") as header_file:
+        for line in header_file:
+            if line.strip() == field_name:
+                # The line after the name gives how many values follow, one per line
+                value_count = int(next(header_file).strip())
+                return np.array(
+                    [float(next(header_file).strip()) for _ in range(value_count)]
+                )
+    raise KeyError(f"No field {field_name} in the RAMS header {header_filepath}")
+
+
+def read_t_level_cell_thicknesses(storm_ds, header_filepath):
+    """The thickness (m) of every RAMS T-level grid cell, on a dataset's ``z``.
+
+    Mechanism: the RAMS header stores two sets of vertical levels.
+
+    * ``__ztn01`` holds the T-level centres, which are the dataset's ``z``.
+    * ``__zmn01`` holds the W levels, which are the faces between T-level cells.
+
+    Counting from 0, T level k spans W levels k - 1 and k, so its thickness is
+    ``zmn[k] - zmn[k - 1]``. T level 0 lies below the ground and has no lower
+    face. It gets NaN, which keeps it out of every air-mass sum.
+
+    Why the faces rather than ``z.diff("z")``: on the stretched part of the grid,
+    below about 3 km, RAMS does not centre the T levels between their faces. The
+    spacing between centres there is 4.7% smaller than the cell thickness (the
+    lowest cell is 25.0 m deep, but its centres are 23.8 m apart). Above the
+    stretched part every cell is 250 m deep, and the two agree.
+
+    The header's T-level centres are checked against ``storm_ds["z"]``. A header
+    from a run with a different vertical grid therefore raises, instead of
+    silently giving the wrong thicknesses.
+
+    Args:
+        storm_ds: The dataset whose ``z`` coordinate the thicknesses go on.
+        header_filepath: Any ``*-head.txt`` file of the run that produced it.
+
+    Returns:
+        A DataArray of cell thicknesses (m) on ``storm_ds``'s ``z`` coordinate.
+    """
+    t_level_centres = read_rams_header_field(header_filepath, "__ztn01")
+    w_level_heights = read_rams_header_field(header_filepath, "__zmn01")
+
+    # Refuse a header whose T levels are not this dataset's T levels
+    header_matches_dataset = len(t_level_centres) == storm_ds.sizes[
+        "z"
+    ] and np.allclose(t_level_centres, storm_ds["z"].values)
+    if not header_matches_dataset:
+        raise ValueError(
+            f"The T levels in {header_filepath} do not match the dataset's z"
+            " coordinate, so its cell thicknesses do not apply to this dataset."
+            " Pass the header file of the run the dataset came from."
+        )
+
+    # Each T level above the ground spans the W levels just below and just above it
+    t_level_thicknesses = np.full(len(t_level_centres), np.nan)
+    t_level_thicknesses[1:] = np.diff(w_level_heights)
+    return xr.DataArray(t_level_thicknesses, coords={"z": storm_ds["z"]}, dims="z")
+
+
+def calculate_thermodynamic_variables(ds, t_level_thicknesses_m=None):
     """Add the derived thermodynamic and physical variables to a RAMS dataset.
 
     Mechanism: RAMS writes the Exner function (``PI``, already multiplied by
@@ -239,9 +322,15 @@ def calculate_thermodynamic_variables(ds):
 
     * ``air_mass`` needs the base-state density ``DN0``, which parcel output lacks.
       Each gridpoint's air mass is DN0 times the 500 m x 500 m cell area times the
-      layer depth from ``z.diff``.
+      cell thickness, which ``t_level_thicknesses_m`` must then supply (see
+      ``read_t_level_cell_thicknesses``).
     * ``buoyancy`` needs a horizontal layer mean, so it is skipped for datasets
       without x and y dimensions.
+
+    Args:
+        ds: RAMS output.
+        t_level_thicknesses_m: Thickness (m) of each T-level cell, on ``ds``'s
+            ``z``. Required when ``ds`` carries ``DN0``.
 
     The dataset is modified in place and also returned.
     """
@@ -256,9 +345,19 @@ def calculate_thermodynamic_variables(ds):
         .pint.to("hPa")
         .pint.dequantify()
     )
+    # Air mass of each gridpoint: base-state density times the cell volume.
     # Parcels don't have DN0 at present; rather than make a separate function we'll just calculate it if we can
     if "DN0" in ds.data_vars:
-        ds["air_mass"] = ds["DN0"] * 500**2 * ds["z"].diff(dim="z")
+        # A missing thickness would otherwise fall back to some approximation
+        # without saying so, which is how the old centre-spacing bias went unnoticed
+        if t_level_thicknesses_m is None:
+            raise ValueError(
+                "air_mass needs the RAMS T-level cell thicknesses; see"
+                " read_t_level_cell_thicknesses"
+            )
+        ds["air_mass"] = (
+            ds["DN0"] * HORIZONTAL_GRID_SPACING_M**2 * t_level_thicknesses_m
+        )
     ds["RH"] = mpc.relative_humidity_from_mixing_ratio(
         ds["P"] * units("hPa"), ds["T"] * units("K"), ds["RV"]
     ).pint.dequantify()
@@ -283,7 +382,7 @@ def calculate_thermodynamic_variables(ds):
     return ds
 
 
-def calculate_derived_variables(storm_ds, storm_name):
+def calculate_derived_variables(storm_ds, storm_name, header_filepath=None):
     """Add derived variables, flags, and coordinates to one storm's RAMS output.
 
     Mechanism: on top of ``calculate_thermodynamic_variables`` this adds
@@ -301,8 +400,25 @@ def calculate_derived_variables(storm_ds, storm_name):
 
     The x and y coordinates are shifted to start at 0, so positions are measured
     from the domain's corner.
+
+    The air mass needs the RAMS T-cell thicknesses, which come from a header
+    file. By default that is the first header in ``RAMS_OUTPUT_DIRS[storm_name]``.
+    Pass ``header_filepath`` for output from any other run; a header whose
+    vertical grid does not match the dataset raises.
     """
-    storm_ds = calculate_thermodynamic_variables(storm_ds)
+    # The T-cell thicknesses that the air mass needs. Only output carrying the
+    # base-state density DN0 gets an air mass, so only that output needs a header
+    t_level_thicknesses_m = None
+    if "DN0" in storm_ds.data_vars:
+        if header_filepath is None:
+            header_filepath = sorted(
+                RAMS_OUTPUT_DIRS[storm_name].glob("a-A-*-head.txt")
+            )[0]
+        t_level_thicknesses_m = read_t_level_cell_thicknesses(
+            storm_ds, header_filepath
+        )
+
+    storm_ds = calculate_thermodynamic_variables(storm_ds, t_level_thicknesses_m)
 
     # Shift the x and y coords so that they start from 0
     storm_ds["x"] = storm_ds["x"] - min(storm_ds["x"])
@@ -459,7 +575,7 @@ def minutes_to_simulation_time(minutes):
 #######################################################################################
 
 
-def postprocess_storm_ds(ds, storm_name, lite=False):
+def postprocess_storm_ds(ds, storm_name, lite=False, header_filepath=None):
     """Turn one storm's raw RAMS output into the dataset the analysis reads.
 
     Mechanism: checks the tracer set, adds the derived variables and flags from
@@ -476,11 +592,14 @@ def postprocess_storm_ds(ds, storm_name, lite=False):
     needs every variable ``calculate_derived_variables`` reads, so it does not work
     on lite files that carry only a subset; the upper-level mass flux therefore
     uses ``read_upper_level_lite_dataset`` instead.
+
+    ``header_filepath`` is passed to ``calculate_derived_variables``. Leave it as
+    None for the runs in ``RUN_DIRS``; give it for output from any other run.
     """
     # Run basic checks
     check_storm_ds(ds, lite=lite)
     # Calculate derived variables and analysis flag
-    ds = calculate_derived_variables(ds, storm_name)
+    ds = calculate_derived_variables(ds, storm_name, header_filepath=header_filepath)
     # Calculate total fixed-source tracer variables
     if not lite:
         ds["total_fs_tracer"] = 0
