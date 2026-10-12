@@ -1008,15 +1008,18 @@ def calculate_upper_level_tracer_dataframe(storm_ds, upper_level_z_threshold_m):
     Mechanism: everything at or above the threshold height is summed over all
     three spatial dimensions. The ``in_analysis`` mask is deliberately not applied,
     so the supercell's total includes both its right and left movers, as the
-    manuscript describes.
+    manuscript describes. No vertical-velocity mask is applied either, so the
+    total includes tracer outside the updraft, such as in the anvil.
 
-    The accumulated (``ACC*``) tracers are surface emission totals rather than 3D
-    fields. They are therefore converted to number concentrations with the air
-    mass of the lowest level above ground (z index 1) at the first time, not with
-    the local air mass. Only the rain-sourced tracers get these.
+    The accumulated (``ACC*``) tracer variables are left out. They record the
+    tracer emitted at the surface, so their sum over the upper-level volume has no
+    meaning. The analysis takes the amount emitted, which it divides the
+    upper-level totals by, from the full storm dataset instead.
 
     Returns:
-        A DataFrame with one row per output time.
+        A DataFrame with one row per output time. Its columns are the volume sums
+        of every current tracer variable (mixing ratio and ``*_nc`` number) and of
+        the air mass.
     """
     upper_level_ds = storm_ds.sel(
         {"z": slice(upper_level_z_threshold_m, None, None)}
@@ -1029,21 +1032,95 @@ def calculate_upper_level_tracer_dataframe(storm_ds, upper_level_z_threshold_m):
             upper_level_ds[tracer] * upper_level_ds["air_mass"]
         )
 
-    # Accumulated emission totals, for the rain-sourced tracers only
-    for tracer in RS_TRACERS:
-        upper_level_ds["ACC" + tracer + "_nc"] = (
-            upper_level_ds["ACC" + tracer]
-            * upper_level_ds.isel({"z": 1, "time": 0})["air_mass"]
-        )
+    # Every current tracer variable, without the accumulated surface emission
+    # (ACC*) variables
+    current_tracer_var_names = [
+        var_name
+        for var_name in upper_level_ds.data_vars
+        if "tracer" in var_name.lower() and not var_name.startswith("ACC")
+    ]
 
     return (
-        upper_level_ds[
-            [x for x in upper_level_ds.data_vars if "tracer" in x.lower()]
-            + ["air_mass"]
-        ]
+        upper_level_ds[current_tracer_var_names + ["air_mass"]]
         .sum(["x", "y", "z"])
         .to_dataframe()
         .reset_index()
+    )
+
+
+def calculate_upward_transport_through_level(storm_ds, level_z_m, horizontal_mask=None):
+    """Cumulative air mass and tracer carried upward through one level.
+
+    Mechanism: at each 5-minute output time, every gridpoint of the level nearest
+    ``level_z_m`` with w > 0 carries ``rho0 * w * dx^2`` kg/s of air upward, and
+    that air carries its tracer mixing ratio q with it. Both are summed over the
+    level and accumulated in time with the 5-minute output interval as the time
+    step. The ratio of a tracer's cumulative transport to the air's is then the
+    flux-weighted mixing ratio of all air that has crossed the level upward, in
+    # kg^-1, the same unit as the upper-level tracer per unit upward mass flux.
+
+    Why it exists: it attributes tracer to a region where the air crosses the
+    level, inside the updrafts. The supercell's two updrafts are well separated
+    there, so masking by the line between the movers splits them cleanly. Masking
+    the tracer *above* the level does not, because the two anvils spread out and
+    overlap.
+
+    Caveats:
+    * Only the 5-minute output carries tracers, so the time integral samples each
+      updraft 37 times. That is too coarse for absolute values but adequate for
+      comparing two regions of the same run.
+    * It counts air as it crosses upward. Air that later sinks back, or that
+      leaves the domain, still counts, unlike in the upper-level tracer totals.
+    * Density is the base-state density DN0, as in the air mass. It is uniform
+      across a level, so it barely affects the ratio.
+
+    Args:
+        storm_ds: A storm dataset from ``postprocess_storm_ds``.
+        level_z_m: Height of the level, in m. The nearest model level is used.
+        horizontal_mask: Optional boolean DataArray on (x, y), such as
+            ``storm_ds["in_analysis"]``. None uses every gridpoint.
+
+    Returns:
+        A DataFrame with one row per output time: ``t_minutes``,
+        ``cumu_upward_air_mass`` in kg, and ``cumu_upward_<tracer>_nc`` in # for
+        every rain-sourced tracer and the total fixed-source tracer.
+    """
+    level_ds = storm_ds.sel({"z": level_z_m}, method="nearest")
+
+    # Output interval, in s, which is the time step of the integral
+    output_interval_s = (
+        level_ds["time"].values[1] - level_ds["time"].values[0]
+    ) / np.timedelta64(1, "s")
+
+    # Upward air mass through each gridpoint over one output interval, in kg. Points
+    # with w <= 0, or outside the requested region, contribute nothing
+    contributes = level_ds["WC"] > 0
+    if horizontal_mask is not None:
+        contributes = contributes & horizontal_mask
+    upward_air_mass = (
+        level_ds["DN0"]
+        * level_ds["WC"]
+        * HORIZONTAL_GRID_SPACING_M**2
+        * output_interval_s
+    ).where(contributes, 0.0)
+
+    # Running totals of the air, and of each tracer the air carries with it
+    transported_tracers = RS_TRACERS + ["total_fs_tracer"]
+    cumulative_transport = {
+        "cumu_upward_air_mass": upward_air_mass.sum(["x", "y"]).cumsum("time")
+    }
+    for tracer in transported_tracers:
+        cumulative_transport[f"cumu_upward_{tracer}_nc"] = (
+            (upward_air_mass * level_ds[tracer]).sum(["x", "y"]).cumsum("time")
+        )
+
+    return (
+        xr.Dataset(cumulative_transport)
+        .compute()
+        .to_dataframe()
+        .reset_index()[
+            ["time", "t_minutes"] + list(cumulative_transport.keys())
+        ]
     )
 
 
@@ -1141,7 +1218,22 @@ def read_upper_level_lite_dataset(storm, upper_level_z_thresholds_m):
     return lite_ds[["WC", "air_density"]].chunk(full_layer_chunks).unify_chunks()
 
 
-def calculate_cumulative_mass_flux(lite_level_ds, output_times):
+def sc_wk_right_mover_mask_for_lite_dataset(lite_ds):
+    """The supercell's right-mover flag on a lite dataset's horizontal grid.
+
+    Mechanism: ``sc_wk_right_mover_boundary`` is defined in coordinates that start
+    at 0 at the domain's corner, because ``postprocess_storm_ds`` shifts x and y
+    that way. ``read_upper_level_lite_dataset`` does not shift them, so the same
+    shift is applied here before the boundary is evaluated. Both readers use the
+    same model grid, so the shifted coordinates line up gridpoint for gridpoint.
+    """
+    # Positions measured from the domain's corner, as in postprocess_storm_ds
+    x_from_corner = lite_ds["x"] - lite_ds["x"].min()
+    y_from_corner = lite_ds["y"] - lite_ds["y"].min()
+    return sc_wk_in_right_mover(x_from_corner, y_from_corner)
+
+
+def calculate_cumulative_mass_flux(lite_level_ds, output_times, horizontal_mask=None):
     """Cumulative upward and downward air mass through a level, from lite output.
 
     Mechanism: at each 2-second lite output time, the mass through each gridpoint
@@ -1152,12 +1244,16 @@ def calculate_cumulative_mass_flux(lite_level_ds, output_times):
     accumulated in time, then sampled at the 5-minute analysis times so they line
     up with the other upper-level quantities.
 
-    The whole domain is used, without the ``in_analysis`` mask, so the supercell's
-    flux includes both movers, matching the upper-level tracer totals.
+    By default the whole domain is used, without the ``in_analysis`` mask, so the
+    supercell's flux includes both movers, matching the upper-level tracer totals.
+    The right-mover sensitivity test passes a ``horizontal_mask`` instead, and only
+    gridpoints where it is True are summed.
 
     Args:
         lite_level_ds: The output of ``read_upper_level_lite_dataset``.
         output_times: The 5-minute analysis times to sample the running totals at.
+        horizontal_mask: Optional boolean DataArray on (y, x). None sums every
+            gridpoint.
 
     Returns:
         A Dataset with ``cumu_upward_mass_flux`` and ``cumu_downward_mass_flux``
@@ -1171,6 +1267,10 @@ def calculate_cumulative_mass_flux(lite_level_ds, output_times):
         * HORIZONTAL_GRID_SPACING_M**2
         * LITE_OUTPUT_INTERVAL_SECONDS
     )
+
+    # Keep only the requested region, if one was given
+    if horizontal_mask is not None:
+        per_gridpoint_mass_flux = per_gridpoint_mass_flux.where(horizontal_mask, 0.0)
 
     # Split the level-summed flux by the sign of w
     is_upward = lite_level_ds["WC"] > 0
@@ -1194,7 +1294,9 @@ def calculate_cumulative_mass_flux(lite_level_ds, output_times):
     )
 
 
-def calculate_upper_level_mass_flux(storm, upper_level_z_thresholds_m, output_times):
+def calculate_upper_level_mass_flux(
+    storm, upper_level_z_thresholds_m, output_times, right_mover_only=False
+):
     """Read a storm's lite output and integrate its upper-level mass flux.
 
     This chains ``read_upper_level_lite_dataset`` and
@@ -1202,17 +1304,39 @@ def calculate_upper_level_mass_flux(storm, upper_level_z_thresholds_m, output_ti
     for a single level, or a list of heights to integrate them all in one pass
     over the files. Expect it to take tens of minutes per storm, because it opens
     all 5401 lite files.
+
+    ``right_mover_only`` restricts the supercell's flux to its right mover, for the
+    sensitivity test. The line separating the movers is applied at the flux level
+    itself, where the two updrafts are still separate.
     """
+    if right_mover_only and storm != "sc_wk":
+        raise ValueError("Only the supercell has a right mover")
     lite_level_ds = read_upper_level_lite_dataset(storm, upper_level_z_thresholds_m)
-    return calculate_cumulative_mass_flux(lite_level_ds, output_times).compute()
+    horizontal_mask = (
+        sc_wk_right_mover_mask_for_lite_dataset(lite_level_ds)
+        if right_mover_only
+        else None
+    )
+    return calculate_cumulative_mass_flux(
+        lite_level_ds, output_times, horizontal_mask=horizontal_mask
+    ).compute()
 
 
-def upper_level_mass_flux_cache_path(storm, z_km):
-    """Cache file for one storm's upper-level mass flux at one height (in km)."""
-    return UPPER_LEVEL_DERIVED_DIRS[storm] / f"ul_mass_fluxes_z-{z_km * 1000}.pkl"
+def upper_level_mass_flux_cache_path(storm, z_km, right_mover_only=False):
+    """Cache file for one storm's upper-level mass flux at one height (in km).
+
+    The right-mover-only flux, which only the supercell has, gets its own file.
+    """
+    region_suffix = "_right_mover" if right_mover_only else ""
+    return (
+        UPPER_LEVEL_DERIVED_DIRS[storm]
+        / f"ul_mass_fluxes{region_suffix}_z-{z_km * 1000}.pkl"
+    )
 
 
-def read_or_compute_upper_level_mass_fluxes(storm, z_kms, output_times):
+def read_or_compute_upper_level_mass_fluxes(
+    storm, z_kms, output_times, right_mover_only=False
+):
     """Load a storm's upper-level mass flux at several heights, computing any missing.
 
     Mechanism: each height has its own cache file, from
@@ -1229,6 +1353,8 @@ def read_or_compute_upper_level_mass_fluxes(storm, z_kms, output_times):
         storm: Storm name.
         z_kms: Threshold heights, in km.
         output_times: The 5-minute analysis times to sample the running totals at.
+        right_mover_only: Restrict the supercell's flux to its right mover. These
+            results are cached in separate files.
 
     Returns:
         Mapping of height in km -> Dataset with ``cumu_upward_mass_flux`` and
@@ -1239,7 +1365,7 @@ def read_or_compute_upper_level_mass_fluxes(storm, z_kms, output_times):
 
     # Use every cache that exists and covers every output time
     for z_km in z_kms:
-        cache_path = upper_level_mass_flux_cache_path(storm, z_km)
+        cache_path = upper_level_mass_flux_cache_path(storm, z_km, right_mover_only)
         if not cache_path.exists():
             continue
         cached_flux_ds = pd.read_pickle(cache_path)
@@ -1264,6 +1390,7 @@ def read_or_compute_upper_level_mass_fluxes(storm, z_kms, output_times):
             storm,
             [z_km * 1000 for z_km in heights_to_compute_km],
             output_times,
+            right_mover_only=right_mover_only,
         )
 
         # Split by height, and write each height to its own cache file
@@ -1275,7 +1402,9 @@ def read_or_compute_upper_level_mass_fluxes(storm, z_kms, output_times):
                     f" {_time_count_of_result(flux_ds)} times but"
                     f" {expected_time_count} were expected. Not caching it."
                 )
-            cache_path = upper_level_mass_flux_cache_path(storm, z_km)
+            cache_path = upper_level_mass_flux_cache_path(
+                storm, z_km, right_mover_only
+            )
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             pd.to_pickle(flux_ds, cache_path)
             print(f"Wrote result to {cache_path}")
