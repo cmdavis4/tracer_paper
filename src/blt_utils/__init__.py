@@ -96,6 +96,14 @@ RS_TRACER_THRESHOLDS_MM_HR = [1, 5, 10, 20, 40]
 RS_TRACERS = [f"TRACERP{str(x).zfill(3)}" for x in range(1, 6)]
 FS_TRACERS = [f"TRACERP{str(x).zfill(3)}" for x in range(7, 43)]
 
+# Each fixed-source species is emitted for this long, one after another:
+# FS_TRACERS[k] is emitted from 5k to 5(k+1) minutes
+FS_TRACER_EMISSION_WINDOW_MINUTES = 5
+
+# Per-gridpoint emission rate of every tracer species while it is being emitted, as a
+# mixing ratio added per second at the lowest model level
+TRACER_EMISSION_RATE = 25_000  # # kg^-1 s^-1
+
 # Non-tracer storm variables that we use
 STORM_VARIABLES_USED = [
     "THETA",
@@ -953,6 +961,164 @@ def read_or_compute_tracer_totals_datasets(storm_dss):
     return tracer_totals_profile_dss, tracer_totals_dss
 
 
+def rain_onset_minutes(tracer_totals_ds):
+    """First output time at which any of the lightest-rain tracer has been emitted.
+
+    Mechanism: the accumulated emission of the 1 mm/hr rain-sourced tracer is zero
+    until the first gridpoint in the storm's analysis region rains at that rate.
+    Rain therefore began after the previous output time and no later than the
+    returned one.
+
+    Returns:
+        The output time in minutes since the start of the run.
+    """
+    accumulated_light_rain_tracer = tracer_totals_ds[f"ACC{RS_TRACERS[0]}_nc"].values
+    return float(
+        tracer_totals_ds["t_minutes"].values[np.argmax(accumulated_light_rain_tracer > 0)]
+    )
+
+
+def fs_species_since_rain_onset(tracer_totals_ds):
+    """The fixed-source species emitted since a storm began to rain.
+
+    Mechanism: the fixed-source species are emitted one after another, each for
+    ``FS_TRACER_EMISSION_WINDOW_MINUTES``, so each species tags when its air was
+    at the surface. Rain began at some time between the output before rain onset
+    and the rain-onset output (see ``rain_onset_minutes``). Every species whose
+    emission window ends after that previous output is kept, and earlier species
+    are dropped. The kept tracer therefore starts at most one emission window
+    before rain began, and never after it.
+
+    The rain onset comes from the storm's in-updraft totals, so it is the onset in
+    the storm's analysis region. Any other tracer total for the same storm, such
+    as the tracer above the upper-level threshold height, uses the same species
+    so that every since-rain-onset quantity starts at the same time.
+
+    Args:
+        tracer_totals_ds: One storm's in-updraft column totals, with the
+            accumulated rain-sourced tracers and ``t_minutes``.
+
+    Returns:
+        A dict with ``species`` (the kept names from ``FS_TRACERS``, in emission
+        order), ``rain_onset_minutes`` (the rain-onset output time) and
+        ``kept_emission_start_minutes`` (when the first kept species began to be
+        emitted).
+    """
+    t_minutes = tracer_totals_ds["t_minutes"].values
+    onset_minutes = rain_onset_minutes(tracer_totals_ds)
+
+    # Rain began after the output time just before the rain-onset output
+    onset_output_ix = int(np.argmax(t_minutes == onset_minutes))
+    previous_output_minutes = t_minutes[max(onset_output_ix - 1, 0)]
+    # First species whose emission window ends after that previous output
+    first_kept_species_ix = int(
+        previous_output_minutes // FS_TRACER_EMISSION_WINDOW_MINUTES
+    )
+
+    return {
+        "species": FS_TRACERS[first_kept_species_ix:],
+        "rain_onset_minutes": onset_minutes,
+        "kept_emission_start_minutes": float(
+            first_kept_species_ix * FS_TRACER_EMISSION_WINDOW_MINUTES
+        ),
+    }
+
+
+def add_fs_tracer_since_rain_onset(tracer_totals_ds):
+    """Add the in-updraft fixed-source tracer emitted since the storm began to rain.
+
+    Mechanism: the fixed-source species emitted since rain onset (see
+    ``fs_species_since_rain_onset``) are summed over the updraft.
+
+    Why rain onset: the rain-sourced tracer fraction f_RS = (rain-sourced tracer) /
+    (fixed-source tracer) is zero by construction before rain begins, so all of its
+    numerator's surface contact comes after rain onset. Starting the denominator at
+    rain onset compares the same period of surface contact. The whole-run
+    denominator also counts surface contact from before the rain, which could
+    never have been rainy. The same kept tracer gives the since-rain-onset q_FS, so
+    q_RS = q_FS x f_RS still holds exactly for the since-rain-onset versions.
+
+    Args:
+        tracer_totals_ds: One storm's in-updraft column totals, with every
+            fixed-source species' ``*_nc`` and the accumulated rain-sourced tracers.
+
+    Returns:
+        A copy of ``tracer_totals_ds`` with ``fs_tracer_since_rain_onset_nc``
+        added. That variable's attributes hold ``rain_onset_minutes`` (the
+        rain-onset output time) and ``kept_emission_start_minutes`` (when the first
+        kept species began to be emitted), which is the start time for normalizing
+        q_FS by the most tracer the air could have collected. The cumulative
+        emission of the same kept species is added as
+        ``ACCfs_tracer_since_rain_onset_nc``, so the kept tracer can be treated
+        like any other tracer that has an ``ACC*`` counterpart.
+    """
+    kept_species = fs_species_since_rain_onset(tracer_totals_ds)
+
+    # Sum the in-updraft number of every kept species
+    fs_tracer_since_onset_nc = sum(
+        tracer_totals_ds[f"{species}_nc"] for species in kept_species["species"]
+    )
+    # Replace the attributes the sum carries over from its inputs with the onset times
+    fs_tracer_since_onset_nc.attrs = {
+        "rain_onset_minutes": kept_species["rain_onset_minutes"],
+        "kept_emission_start_minutes": kept_species["kept_emission_start_minutes"],
+    }
+
+    # Cumulative emission of the same kept species, summed over the analysis region
+    accumulated_fs_tracer_since_onset_nc = sum(
+        tracer_totals_ds[f"ACC{species}_nc"] for species in kept_species["species"]
+    )
+
+    return tracer_totals_ds.assign(
+        fs_tracer_since_rain_onset_nc=fs_tracer_since_onset_nc,
+        ACCfs_tracer_since_rain_onset_nc=accumulated_fs_tracer_since_onset_nc,
+    )
+
+
+def normalized_fs_mixing_ratio(tracer_totals_ds, since_rain_onset=False):
+    """In-updraft mean fixed-source mixing ratio as a fraction of the most it could be.
+
+    Mechanism: air at the lowest model level gains ``TRACER_EMISSION_RATE`` of
+    fixed-source tracer every second, so after a given elapsed time it holds at most
+    the rate times that time. Dividing the mean mixing ratio q_FS by that ceiling
+    gives a dimensionless number between 0 and 1: the average fraction of the
+    elapsed time that updraft air spent at the lowest model level. This removes the
+    bias toward storms that peak later, whose air has had longer to collect tracer.
+
+    With ``since_rain_onset``, the numerator is the tracer kept by
+    ``add_fs_tracer_since_rain_onset`` and the elapsed time is counted from when the
+    first kept species began to be emitted. Times at or before that start have no
+    ceiling, and are returned as NaN.
+
+    Args:
+        tracer_totals_ds: One storm's in-updraft column totals. With
+            ``since_rain_onset``, it must already hold
+            ``fs_tracer_since_rain_onset_nc``.
+        since_rain_onset: Whether to count only fixed-source tracer emitted since
+            rain onset.
+
+    Returns:
+        A DataArray along ``time``.
+    """
+    # Choose the fixed-source tracer and the time from which its ceiling grows
+    if since_rain_onset:
+        fs_tracer_nc = tracer_totals_ds["fs_tracer_since_rain_onset_nc"]
+        emission_start_minutes = fs_tracer_nc.attrs["kept_emission_start_minutes"]
+    else:
+        fs_tracer_nc = tracer_totals_ds["total_fs_tracer_nc"]
+        emission_start_minutes = 0.0
+
+    # Seconds of emission the air could have collected, undefined until it starts
+    elapsed_seconds = (tracer_totals_ds["t_minutes"] - emission_start_minutes) * 60
+    elapsed_seconds = elapsed_seconds.where(elapsed_seconds > 0)
+
+    # Mean mixing ratio over the updraft, divided by its ceiling. Times with no
+    # updraft divide zero by zero and give NaN.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean_fs_mixing_ratio = fs_tracer_nc / tracer_totals_ds["air_mass"]
+        return mean_fs_mixing_ratio / (TRACER_EMISSION_RATE * elapsed_seconds)
+
+
 def read_or_compute_development_dataframes(storm_dss):
     """Load each storm's development dataframe, computing any that are missing.
 
@@ -1006,15 +1172,17 @@ def calculate_upper_level_tracer_dataframe(storm_ds, upper_level_z_threshold_m):
     """Total tracer content above a height, as a time series.
 
     Mechanism: everything at or above the threshold height is summed over all
-    three spatial dimensions. The ``in_analysis`` mask is deliberately not applied,
-    so the supercell's total includes both its right and left movers, as the
-    manuscript describes. No vertical-velocity mask is applied either, so the
-    total includes tracer outside the updraft, such as in the anvil.
+    three spatial dimensions. No region mask is applied here, so the sum covers
+    whatever the dataset holds. To limit the supercell to its right mover, as the
+    manuscript does, mask the dataset first; ``read_or_compute_upper_level_tracer_dataframe``
+    does that. No vertical-velocity mask is applied either, so the total includes
+    tracer outside the updraft, such as in the anvil.
 
     The accumulated (``ACC*``) tracer variables are left out. They record the
     tracer emitted at the surface, so their sum over the upper-level volume has no
     meaning. The analysis takes the amount emitted, which it divides the
-    upper-level totals by, from the full storm dataset instead.
+    upper-level totals by, from ``calculate_cumulative_rain_sourced_emission``
+    instead.
 
     Returns:
         A DataFrame with one row per output time. Its columns are the volume sums
@@ -1045,6 +1213,96 @@ def calculate_upper_level_tracer_dataframe(storm_ds, upper_level_z_threshold_m):
         .sum(["x", "y", "z"])
         .to_dataframe()
         .reset_index()
+    )
+
+
+def upper_level_tracer_totals_cache_path(storm, z_km, right_mover_only=False):
+    """Cache file for one storm's upper-level tracer totals at one height (in km).
+
+    The right-mover-only totals, which only the supercell has, get their own file,
+    as the mass fluxes do (see ``upper_level_mass_flux_cache_path``).
+    """
+    region_suffix = "_right_mover" if right_mover_only else ""
+    return (
+        UPPER_LEVEL_DERIVED_DIRS[storm]
+        / f"ul_tracer_totals{region_suffix}_z-{z_km * 1000}.pkl"
+    )
+
+
+def read_or_compute_upper_level_tracer_dataframe(
+    storm, storm_ds, z_km, right_mover_only=False
+):
+    """Load a storm's upper-level tracer totals at one height, computing them if missing.
+
+    Mechanism: ``calculate_upper_level_tracer_dataframe`` sums whatever dataset it is
+    given, so the region is chosen by masking the dataset first. With
+    ``right_mover_only``, the supercell's tracer variables and air mass are masked to
+    its ``in_analysis`` flag, which is the right mover. Only those variables are
+    masked, because masking the whole dataset would broadcast the flag onto every
+    variable for nothing. The result is cached per storm, height and region, and
+    trusted only when it has one row per output time of the run.
+
+    Args:
+        storm: Storm name.
+        storm_ds: The storm's dataset, from ``postprocess_storm_ds``.
+        z_km: Threshold height, in km.
+        right_mover_only: Limit the supercell to its right mover. Only the supercell
+            has one, so this raises for the other storms.
+
+    Returns:
+        The DataFrame from ``calculate_upper_level_tracer_dataframe``.
+    """
+    if right_mover_only and storm != "sc_wk":
+        raise ValueError("Only the supercell has a right mover")
+
+    # The dataset to sum: the tracers and air mass over the right mover only, or the
+    # whole dataset
+    if right_mover_only:
+        tracer_variables = FS_TRACERS + RS_TRACERS + ["total_fs_tracer", "air_mass"]
+        summed_ds = storm_ds[tracer_variables].where(storm_ds["in_analysis"])
+    else:
+        summed_ds = storm_ds
+
+    return read_or_cache_pickle(
+        upper_level_tracer_totals_cache_path(storm, z_km, right_mover_only),
+        calculate_upper_level_tracer_dataframe,
+        summed_ds,
+        z_km * 1000,
+        expected_time_count=storm_ds.sizes["time"],
+    )
+
+
+def calculate_cumulative_rain_sourced_emission(storm_ds, region_mask=None):
+    """Cumulative surface emission of each rain-sourced tracer, as a time series.
+
+    Mechanism: each ``ACC<tracer>_nc`` variable holds the number of tracer emitted
+    in a gridpoint so far. Tracer is emitted only at the lowest model level above
+    ground (index 1, since index 0 is below ground), so summing that level over x
+    and y gives the cumulative emission. All five tracers are reduced in a single
+    pass over the output, which costs about as much as reducing one.
+
+    Args:
+        storm_ds: A storm dataset from ``postprocess_storm_ds``.
+        region_mask: Optional boolean DataArray on (x, y), such as
+            ``storm_ds["in_analysis"]``. Only gridpoints where it is True are
+            summed. None sums every gridpoint.
+
+    Returns:
+        A DataFrame with one row per output time: ``t_minutes`` and
+        ``ACC<tracer>_nc`` for each rain-sourced tracer, in #.
+    """
+    emission_variable_names = [f"ACC{tracer}_nc" for tracer in RS_TRACERS]
+    lowest_level_emission_ds = storm_ds[emission_variable_names].isel({"z": 1})
+
+    # Keep only the requested region, if one was given
+    if region_mask is not None:
+        lowest_level_emission_ds = lowest_level_emission_ds.where(region_mask)
+
+    return (
+        lowest_level_emission_ds.sum(["x", "y"])
+        .compute()
+        .to_dataframe()
+        .reset_index()[["t_minutes"] + emission_variable_names]
     )
 
 
@@ -1083,7 +1341,9 @@ def calculate_upward_transport_through_level(storm_ds, level_z_m, horizontal_mas
     Returns:
         A DataFrame with one row per output time: ``t_minutes``,
         ``cumu_upward_air_mass`` in kg, and ``cumu_upward_<tracer>_nc`` in # for
-        every rain-sourced tracer and the total fixed-source tracer.
+        every rain-sourced tracer, every fixed-source species, and the total
+        fixed-source tracer. The species let a caller sum only those emitted since
+        rain onset (see ``fs_species_since_rain_onset``).
     """
     level_ds = storm_ds.sel({"z": level_z_m}, method="nearest")
 
@@ -1105,7 +1365,7 @@ def calculate_upward_transport_through_level(storm_ds, level_z_m, horizontal_mas
     ).where(contributes, 0.0)
 
     # Running totals of the air, and of each tracer the air carries with it
-    transported_tracers = RS_TRACERS + ["total_fs_tracer"]
+    transported_tracers = RS_TRACERS + FS_TRACERS + ["total_fs_tracer"]
     cumulative_transport = {
         "cumu_upward_air_mass": upward_air_mass.sum(["x", "y"]).cumsum("time")
     }
@@ -1244,10 +1504,9 @@ def calculate_cumulative_mass_flux(lite_level_ds, output_times, horizontal_mask=
     accumulated in time, then sampled at the 5-minute analysis times so they line
     up with the other upper-level quantities.
 
-    By default the whole domain is used, without the ``in_analysis`` mask, so the
-    supercell's flux includes both movers, matching the upper-level tracer totals.
-    The right-mover sensitivity test passes a ``horizontal_mask`` instead, and only
-    gridpoints where it is True are summed.
+    By default the whole domain is used. The supercell's right mover, which the
+    upper-level analysis uses to match its tracer totals, is selected by passing a
+    ``horizontal_mask``. Only gridpoints where it is True are then summed.
 
     Args:
         lite_level_ds: The output of ``read_upper_level_lite_dataset``.
@@ -1305,9 +1564,9 @@ def calculate_upper_level_mass_flux(
     over the files. Expect it to take tens of minutes per storm, because it opens
     all 5401 lite files.
 
-    ``right_mover_only`` restricts the supercell's flux to its right mover, for the
-    sensitivity test. The line separating the movers is applied at the flux level
-    itself, where the two updrafts are still separate.
+    ``right_mover_only`` restricts the supercell's flux to its right mover, as the
+    upper-level analysis does. The line separating the movers is applied at the
+    flux level itself, where the two updrafts are still separate.
     """
     if right_mover_only and storm != "sc_wk":
         raise ValueError("Only the supercell has a right mover")

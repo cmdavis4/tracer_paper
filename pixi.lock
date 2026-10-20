@@ -7512,7 +7512,7 @@ packages:
 - pypi: ../carlee/skyvista
   name: skyvista
   version: 1.2.0
-  sha256: cea9b48d0e7017cafd0bc23835258658c1c7179ebf0f2f7e955cf74a7b5b3c0c
+  sha256: db740f98951232e4e9516227e2d67f8835d1d061f8e3738cb952de9db5ef5ddc
   requires_dist:
   - pyvista[all]>=0.47.1
   - trame
@@ -7529,6 +7529,7 @@ packages:
   - ruff ; extra == 'dev'
   - mypy ; extra == 'dev'
   - alembic3d ; python_full_version < '3.14' and extra == 'blender'
+  - bpy>=5.1,<6 ; (python_full_version == '3.13.*' and platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'blender') or (python_full_version == '3.13.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'blender') or (python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'blender')
   requires_python: '>=3.13'
   editable: true
 - conda: https://conda.anaconda.org/conda-forge/linux-64/snappy-1.2.2-h03e3b7b_1.conda

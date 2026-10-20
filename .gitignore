@@ -47,3 +47,7 @@ validation/harmonization_output/
 
 # Per-user Claude Code settings
 .claude/settings.local.json
+
+# Loose papers and logs at the top level
+/*.pdf
+*.log

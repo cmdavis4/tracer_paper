@@ -69,7 +69,12 @@ The caption says "The low-level moisture and shear profile were varied between s
 - Line 141 calls it "WK82".
 - Lines 684–687 cite it as "(Weisman and Klemp, 1982)".
 
-Pick one year for the profile. The analytic thermodynamic profile comes from the 1982 paper.
+Each citation should name the paper its part of the setup comes from:
+
+- **Weisman and Klemp (1982):** the analytic thermodynamic profile, and straight hodographs like the IC's and SL's.
+- **Weisman and Klemp (1984):** the half-circle hodograph that the SC uses.
+
+Wherever the text means the whole sounding, it can cite both. (Corrected on 10 October. This item first said to pick one year.)
 
 ### 4. The right-mover dividing line ends at the wrong y
 *Line 218*
@@ -390,6 +395,7 @@ Table 2 defines Δt as the 1-s model timestep. Eq. 2 sums over the 2-s output, s
   - **The bug.** `blt.calculate_upper_level_tracer_dataframe` converts the accumulated emission with the air mass at `isel(z=1)`, but only after it has cut the dataset to z ≥ threshold. That index is the second level above the threshold. The docstring says it is the lowest level above ground.
   - **The effect.** Fig. 11 does not use these columns, because cell index 51 takes E_RS from the full dataset. No number in the paper changes.
   - **Why it matters.** The function ships in the code archive.
+  - **Status: fixed on 8 October.** The function no longer returns any `ACC*` column, because a sum of surface emission over the upper-level volume has no meaning. The 13 cached upper-level tables had the same columns removed. Every other column is unchanged.
 
 ---
 
