@@ -51,3 +51,8 @@ validation/harmonization_output/
 # Loose papers and logs at the top level
 /*.pdf
 *.log
+# Machine-specific editor/workspace files and the bundled RAMS build copy
+*.code-workspace
+.claude/
+.vscode/
+RAMS_tracer_source/
